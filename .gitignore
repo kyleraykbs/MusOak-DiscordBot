@@ -1,0 +1,16 @@
+# nix
+result
+result-*
+
+# direnv keeps generated state here; it is not source
+.direnv/
+
+# go workspace state
+.go/
+
+# editor/OS
+*.swp
+.DS_Store
+
+# scratch
+*.log
