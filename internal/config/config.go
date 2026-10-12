@@ -18,6 +18,9 @@ import (
 type Account struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// DisplayName is the name the room shows for the placeholder's queue
+	// items; the bot pins it on the account at startup.
+	DisplayName string `json:"displayName,omitempty"`
 }
 
 // Config is the whole configuration.
@@ -44,6 +47,7 @@ type Config struct {
 // own config: XDG directories, falling back to the home directory.
 func Default() *Config {
 	return &Config{
+		Account:  Account{DisplayName: "Discord Bot"},
 		State:    filepath.Join(dataDir(), "musoak-discord-bot", "state.db"),
 		CacheDir: filepath.Join(cacheDir(), "musoak-discord-bot"),
 	}
@@ -110,6 +114,11 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.CacheDir == "" {
 		cfg.CacheDir = Default().CacheDir
+	}
+	if cfg.Account.DisplayName == "" {
+		// An explicitly blanked name means the default, JSON cannot tell
+		// absent from empty.
+		cfg.Account.DisplayName = Default().Account.DisplayName
 	}
 	applyEnv(cfg)
 
