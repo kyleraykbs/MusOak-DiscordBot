@@ -124,18 +124,50 @@ func (b *Bot) ensureRoom(ctx context.Context, guildID, channelID string) (string
 	return created.RoomID, nil
 }
 
+// joinRoomAsPlaceholder joins the room as the placeholder. A room the server
+// no longer has — it closed while nobody was in it — is not an error to hand
+// the user: the mapping is forgotten, a fresh room is opened for the channel
+// and this member joins that instead.
+func (b *Bot) joinRoomAsPlaceholder(ctx context.Context, guildID, channelID, roomID string) (*client.RoomClient, error) {
+	var room *client.RoomClient
+	err := b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
+		var err error
+		room, err = c.JoinRoom(ctx, roomID)
+		return err
+	})
+	if err == nil {
+		return room, nil
+	}
+	if !client.IsNotFound(err) {
+		return nil, fmt.Errorf("joining room %s: %w", roomID, err)
+	}
+
+	b.logger.Info("bot: the mapped room is gone; opening a new one", "room", roomID)
+	if forgetErr := b.store.ForgetRoom(ctx, guildID, channelID); forgetErr != nil {
+		b.logger.Warn("bot: forgetting a gone room", "error", forgetErr)
+	}
+	fresh, createErr := b.ensureRoom(ctx, guildID, channelID)
+	if createErr != nil {
+		return nil, createErr
+	}
+	err = b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
+		var err error
+		room, err = c.JoinRoom(ctx, fresh)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("joining the new room %s: %w", fresh, err)
+	}
+	return room, nil
+}
+
 // startParticipant attaches a fresh participant — the placeholder's
 // membership, a voice sink, and the play tracker — and runs it until the room
 // closes or it is replaced.
 func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string, conn disgovoice.Conn) error {
-	var room *client.RoomClient
-	err := b.accounts.withPlaceholder(context.Background(), func(c *client.Client) error {
-		var err error
-		room, err = c.JoinRoom(context.Background(), roomID)
-		return err
-	})
+	room, err := b.joinRoomAsPlaceholder(context.Background(), guildID, channelID, roomID)
 	if err != nil {
-		return fmt.Errorf("joining room %s: %w", roomID, err)
+		return err
 	}
 
 	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn), b.logger)
@@ -153,40 +185,88 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 
 	go func() {
 		defer close(run.done)
-		err := participant.Run(ctx)
-		tracker.flush()
-		if errors.Is(err, context.Canceled) {
-			return
-		}
-		if err != nil {
-			b.logger.Warn("bot: the room follower stopped", "room", roomID, "error", err)
-			return
-		}
-		// The room closed while we were in it: give the voice channel back and
-		// forget the mapping so the next command opens a fresh room.
-		b.logger.Info("bot: the room closed", "room", roomID)
-		b.stopParticipant(g)
-		g.mu.Lock()
-		if g.voiceChannel == channelID {
-			g.voiceChannel = ""
-		}
-		g.mu.Unlock()
-		b.voice.close(context.Background(), guildID)
-		if err := b.store.ForgetRoom(context.Background(), guildID, channelID); err != nil {
-			b.logger.Warn("bot: forgetting a closed room", "error", err)
+		backoff := participantRetryFloor
+		for {
+			err := participant.Run(ctx)
+			tracker.flush()
+			if errors.Is(err, context.Canceled) {
+				return // replaced or stopped
+			}
+			if err == nil {
+				// The room closed while we were in it: give the voice channel
+				// back and forget the mapping so the next command opens a
+				// fresh room.
+				b.logger.Info("bot: the room closed", "room", roomID)
+				g.mu.Lock()
+				if g.run == run {
+					g.run = nil
+					g.voiceChannel = ""
+				}
+				g.mu.Unlock()
+				b.voice.close(context.Background(), guildID)
+				if err := b.store.ForgetRoom(context.Background(), guildID, channelID); err != nil {
+					b.logger.Warn("bot: forgetting a closed room", "error", err)
+				}
+				return
+			}
+			// The follower can lose the room's event socket — a server
+			// restart, a proxy that hangs up — and that must not be the end of
+			// the music: the room is still there and this member is still in
+			// it, so follow it again, backing off as failures repeat.
+			b.logger.Warn("bot: the room follower stopped; retrying",
+				"room", roomID, "error", err, "in", backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < participantRetryCeiling {
+				backoff *= 2
+			}
 		}
 	}()
 	return nil
 }
 
-// leaveVoice stops the participant and disconnects from the guild's voice.
+// How long a lost room follower waits before trying again, and how far the
+// wait grows when failures repeat.
+const (
+	participantRetryFloor   = 10 * time.Second
+	participantRetryCeiling = 2 * time.Minute
+)
+
+// leaveVoice stops the participant, disconnects from the guild's voice and
+// leaves the room as the placeholder, so the listening board does not keep a
+// bot that is not there. The room itself survives while anybody else is in it,
+// and its queue with it: /join comes back to the same room.
 func (b *Bot) leaveVoice(ctx context.Context, guildID string) {
 	g := b.guild(guildID)
+	g.mu.Lock()
+	roomID := ""
+	if g.run != nil {
+		roomID = g.run.roomID
+	}
+	g.mu.Unlock()
+
 	b.stopParticipant(g)
 	g.mu.Lock()
 	g.voiceChannel = ""
 	g.mu.Unlock()
 	b.voice.close(ctx, guildID)
+
+	if roomID == "" {
+		return
+	}
+	err := b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
+		room, err := c.JoinRoom(ctx, roomID)
+		if err != nil {
+			return err
+		}
+		return room.Leave(ctx)
+	})
+	if err != nil && !client.IsNotFound(err) {
+		b.logger.Warn("bot: could not leave the room", "room", roomID, "error", err)
+	}
 }
 
 // stopAll ends every participant; the process is going away.
