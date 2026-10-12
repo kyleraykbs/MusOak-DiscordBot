@@ -59,6 +59,20 @@ func TestEnvironmentTokenWinsOverFile(t *testing.T) {
 	}
 }
 
+func TestThePlaceholderNameDefaultsAndSurvivesBlank(t *testing.T) {
+	if got := Default().Account.DisplayName; got != "Discord Bot" {
+		t.Errorf("default displayName = %q", got)
+	}
+	path := writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p","displayName":""}}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Account.DisplayName != "Discord Bot" {
+		t.Errorf("blanked displayName = %q, want the default", cfg.Account.DisplayName)
+	}
+}
+
 func TestValidateNamesWhatIsMissing(t *testing.T) {
 	cases := []struct {
 		mutate func(*Config)

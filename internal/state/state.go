@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -58,13 +59,16 @@ type Store struct {
 }
 
 // Open opens (creating if needed) the state database at path with the file
-// mode that keeps linked credentials to the owner.
+// mode that keeps linked credentials to the owner. The umask covers sqlite's
+// -wal and -shm sidecars too: the write-ahead log holds the most recent
+// writes, credentials among them, and it is created by sqlite itself.
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("state directory: %w", err)
 		}
 	}
+	defer syscall.Umask(syscall.Umask(0o077)) // restore on return
 	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

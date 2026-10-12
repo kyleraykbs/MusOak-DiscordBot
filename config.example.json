@@ -1,0 +1,10 @@
+{
+  "token": "MTIzNDU2Nzg5MA.GaBcDe.discord-bot-token-from-the-developer-portal",
+  "serverURL": "https://music.example.com",
+  "guilds": ["123456789012345678"],
+  "account": {
+    "username": "musoak-discord-bot",
+    "password": "the-password-you-chose-for-it",
+    "displayName": "Discord Bot"
+  }
+}

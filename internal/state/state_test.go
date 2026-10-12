@@ -34,6 +34,33 @@ func TestStateFileIsOwnerOnly(t *testing.T) {
 	}
 }
 
+func TestTheWriteAheadLogIsOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	// A write opens the WAL, which sqlite creates under our umask.
+	if err := s.PutLink(context.Background(), Link{
+		DiscordID: "d1", Username: "u", Password: "p", Token: "t", LinkedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
+		info, err := os.Stat(sidecar)
+		if os.IsNotExist(err) {
+			continue // a checkpoint may already have removed it
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s mode = %o, want 600 (it can hold credentials)", filepath.Base(sidecar), perm)
+		}
+	}
+}
+
 func TestLinkRoundTripAndReplace(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
