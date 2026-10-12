@@ -104,10 +104,20 @@ func (b *Bot) ensureRoom(ctx context.Context, guildID, channelID string) (string
 		return roomID, nil
 	}
 
-	name := channelID
-	if channel, err := b.session.State.Channel(channelID); err == nil && channel.Name != "" {
-		name = channel.Name
+	name := b.channelName(channelID)
+
+	// A room with this channel's name may already be there: the bot was
+	// restarted with a fresh state, or the room was left behind. Rejoining it
+	// is what keeps one voice channel from having two rooms with its name.
+	if existing, ok := b.existingRoomFor(ctx, name); ok {
+		if err := b.store.SetRoom(ctx, guildID, channelID, existing); err != nil {
+			return "", fmt.Errorf("remembering the room: %w", err)
+		}
+		b.logger.Info("bot: joining the room this channel already has",
+			"guild", guildID, "channel", channelID, "room", existing, "name", name)
+		return existing, nil
 	}
+
 	var created *client.RoomClient
 	err = b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
 		var err error
@@ -123,6 +133,69 @@ func (b *Bot) ensureRoom(ctx context.Context, guildID, channelID string) (string
 	b.logger.Info("bot: opened a room for a voice channel",
 		"guild", guildID, "channel", channelID, "room", created.RoomID, "name", name)
 	return created.RoomID, nil
+}
+
+// channelName is what the room for a voice channel is called. Without a
+// gateway state to ask — in tests — the channel's own id stands in.
+func (b *Bot) channelName(channelID string) string {
+	if b.session == nil || b.session.State == nil {
+		return channelID
+	}
+	if channel, err := b.session.State.Channel(channelID); err == nil && channel.Name != "" {
+		return channel.Name
+	}
+	return channelID
+}
+
+// existingRoomFor finds a room this channel should use instead of a new one:
+// one already named after it.
+func (b *Bot) existingRoomFor(ctx context.Context, name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	var rooms []client.Room
+	err := b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
+		var err error
+		rooms, err = c.Rooms(ctx)
+		return err
+	})
+	if err != nil {
+		b.logger.Warn("bot: could not list the rooms", "error", err)
+		return "", false
+	}
+	return pickRoomByName(rooms, name, b.accounts.placeholderID())
+}
+
+// pickRoomByName chooses the room a voice channel belongs to when nothing is
+// remembered for it. The bot being in a room with that name is the strongest
+// signal — it is the room the bot made — then a room somebody is actually
+// listening in, then the newest of them.
+func pickRoomByName(rooms []client.Room, name, placeholder string) (string, bool) {
+	best := ""
+	var bestIn, bestLive bool
+	var bestAt int64
+	for _, room := range rooms {
+		if room.Name != name {
+			continue
+		}
+		in := placeholder != "" && room.HasMember(placeholder)
+		live := len(room.Members) > 0
+		if best == "" || betterRoom(in, live, room.CreatedAtMs, bestIn, bestLive, bestAt) {
+			best, bestIn, bestLive, bestAt = room.ID, in, live, room.CreatedAtMs
+		}
+	}
+	return best, best != ""
+}
+
+// betterRoom ranks two candidates for the room a channel should use.
+func betterRoom(in, live bool, at int64, bestIn, bestLive bool, bestAt int64) bool {
+	if in != bestIn {
+		return in
+	}
+	if live != bestLive {
+		return live
+	}
+	return at > bestAt
 }
 
 // joinRoomAsPlaceholder joins the room as the placeholder. A room the server
@@ -175,7 +248,7 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 	if bufferFrames < 3 {
 		bufferFrames = 3
 	}
-	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames), b.logger)
+	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames, b.logger), b.logger)
 	bitrate := b.cfg.AudioBitrateKbps
 	if bitrate <= 0 {
 		bitrate = channelBitrateKbps(b.session, channelID)

@@ -64,8 +64,12 @@ type Sink struct {
 	// bitrateKbps is what the encoder targets: the voice channel's own, which
 	// is where Discord caps it. Zero keeps the default.
 	bitrateKbps int
-	proc        *runProc
-	cancel      context.CancelFunc // kills the current ffmpeg
+	// playedBase is the sender's pull count when this run began. The sender
+	// counts for the whole connection; a position belongs to one run, so the
+	// difference is what this run has played.
+	playedBase int64
+	proc       *runProc
+	cancel     context.CancelFunc // kills the current ffmpeg
 }
 
 // NewSink builds a sink that launches bin as ffmpeg ("ffmpeg" when empty).
@@ -125,6 +129,9 @@ func (s *Sink) Play(ctx context.Context, track client.SinkTrack) error {
 	}
 	s.sent = 0
 	s.seekReq = false
+	if reporter, ok := s.sender.(PlayedReporter); ok {
+		s.playedBase = reporter.PlayedFrames()
+	}
 	s.closePauseLocked()
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
@@ -243,7 +250,11 @@ func (s *Sink) PositionMs(ctx context.Context) (int64, error) {
 	posMs, sent := s.posMs, s.sent
 	s.mu.Unlock()
 	if reporter, ok := s.sender.(PlayedReporter); ok {
-		return posMs + reporter.PlayedFrames()*frameMs, nil
+		played := reporter.PlayedFrames() - s.playedBase
+		if played < 0 {
+			played = 0
+		}
+		return posMs + played*frameMs, nil
 	}
 	return posMs + sent*frameMs, nil
 }

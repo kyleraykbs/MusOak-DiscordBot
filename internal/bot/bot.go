@@ -130,7 +130,57 @@ func (b *Bot) Open() error {
 		}
 	}
 	b.logger.Info("bot: commands registered", "guilds", len(guildIDs), "count", len(commandDefs()))
+
+	// A restart used to take the music with it. The room is remembered per
+	// voice channel, so a channel that still has listeners gets its bot back
+	// without anybody typing /join.
+	go b.rejoinMappedChannels()
 	return nil
+}
+
+// rejoinMappedChannels puts the bot back into every remembered voice channel
+// that still has somebody in it.
+func (b *Bot) rejoinMappedChannels() {
+	ctx := b.ctx
+	mappings, err := b.store.Rooms(ctx)
+	if err != nil {
+		b.logger.Warn("bot: could not read the room mappings", "error", err)
+		return
+	}
+	for _, mapping := range mappings {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if !b.channelHasListeners(mapping.GuildID, mapping.ChannelID) {
+			continue
+		}
+		if _, err := b.startGuild(ctx, mapping.GuildID, mapping.ChannelID); err != nil {
+			b.logger.Warn("bot: could not return to a voice channel",
+				"guild", mapping.GuildID, "channel", mapping.ChannelID, "error", err)
+			continue
+		}
+		b.logger.Info("bot: returned to a voice channel after a restart",
+			"guild", mapping.GuildID, "channel", mapping.ChannelID)
+	}
+}
+
+// channelHasListeners reports whether anybody but the bot is in the channel.
+func (b *Bot) channelHasListeners(guildID, channelID string) bool {
+	if b.session.State.User == nil {
+		return false
+	}
+	guild, err := b.session.State.Guild(guildID)
+	if err != nil || guild == nil {
+		return false
+	}
+	for _, state := range guild.VoiceStates {
+		if state.ChannelID == channelID && state.UserID != b.session.State.User.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // registerGuild puts the whole command set into one server, replacing whatever

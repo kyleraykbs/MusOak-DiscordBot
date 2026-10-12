@@ -26,8 +26,9 @@ type accounts struct {
 	store       *state.Store
 	logger      *slog.Logger
 
-	mu    sync.Mutex
-	token string // the placeholder's current session
+	mu     sync.Mutex
+	token  string // the placeholder's current session
+	userID string // the placeholder's own account id, once known
 }
 
 func newAccounts(cfg *config.Config, store *state.Store, logger *slog.Logger) *accounts {
@@ -49,8 +50,17 @@ func (a *accounts) login(ctx context.Context) (string, error) {
 	}
 	a.mu.Lock()
 	a.token = auth.Token
+	a.userID = auth.User.ID
 	a.mu.Unlock()
 	return auth.Token, nil
+}
+
+// placeholderID is the account id of the placeholder, once a login has named
+// it. Empty before that.
+func (a *accounts) placeholderID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.userID
 }
 
 func (a *accounts) currentToken() string {

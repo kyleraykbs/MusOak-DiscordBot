@@ -225,6 +225,24 @@ func TestQueuedAttributionLookupAndPrune(t *testing.T) {
 	}
 }
 
+func TestRoomsListsEveryMapping(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if err := s.SetRoom(ctx, "g1", "c1", "room-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRoom(ctx, "g2", "c2", "room-b"); err != nil {
+		t.Fatal(err)
+	}
+	rooms, err := s.Rooms(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms) != 2 || rooms[0].RoomID != "room-a" || rooms[1].RoomID != "room-b" {
+		t.Fatalf("rooms = %+v", rooms)
+	}
+}
+
 func TestRoomMappingRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)

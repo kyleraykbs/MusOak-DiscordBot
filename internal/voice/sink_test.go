@@ -155,6 +155,63 @@ func indexOf(args []string, want string) int {
 	return -1
 }
 
+// reportingSender is a fake that counts pulls the way a real connection does:
+// monotonically, across runs.
+type reportingSender struct {
+	fakeSender
+
+	mu     sync.Mutex
+	played int64
+}
+
+func (r *reportingSender) Send(packet []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.packets++
+	return nil
+}
+
+func (r *reportingSender) PlayedFrames() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.played
+}
+
+func (r *reportingSender) pull(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.played += int64(n)
+}
+
+// A sender that counts pulls counts them for the whole connection, and a
+// position belongs to one run: a second track must not inherit the first
+// track's frames as if they were its own, which is a position minutes ahead of
+// the room and a seek every beat.
+func TestPositionIsPerRunNotPerConnection(t *testing.T) {
+	pages := writeFixturePages(t, [][][]byte{{[]byte("one"), []byte("two")}})
+	script := writeScript(t, "cat "+pages[0])
+	sender := &reportingSender{}
+	sink := NewSink(script, sender, nil)
+
+	if err := sink.Play(context.Background(), client.SinkTrack{Path: "a.opus", PositionMs: 1_000}); err != nil {
+		t.Fatalf("first Play: %v", err)
+	}
+	sender.pull(2)
+	pos, _ := sink.PositionMs(context.Background())
+	if want := int64(1_000 + 2*frameMs); pos != want {
+		t.Fatalf("first run position = %d, want %d", pos, want)
+	}
+
+	// The connection has played plenty; the next run starts where it is told.
+	if err := sink.Play(context.Background(), client.SinkTrack{Path: "b.opus", PositionMs: 30_000}); err != nil {
+		t.Fatalf("second Play: %v", err)
+	}
+	pos, _ = sink.PositionMs(context.Background())
+	if pos != 30_000 {
+		t.Fatalf("second run position = %d, want 30000 (the first run's frames are not its own)", pos)
+	}
+}
+
 func TestPlayStreamsTheWholeFileAndReportsPosition(t *testing.T) {
 	pages := writeFixturePages(t, [][][]byte{
 		{[]byte("one"), []byte("two"), []byte("three")},

@@ -3,6 +3,7 @@ package voice
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -24,21 +25,30 @@ type ConnSender struct {
 	queue  chan []byte
 	closed chan struct{}
 	once   sync.Once
+	logger *slog.Logger
 
 	played atomic.Int64 // frames the connection has actually pulled
+	// dry counts the pulls that found nothing queued since the last one that
+	// did: a run of them is a gap in the audio, and it is worth saying out
+	// loud rather than leaving to be heard.
+	dry int
 }
 
 // NewConnSender attaches a frame provider to the connection and returns the
 // sender the sink pushes into. bufferFrames is how much audio is kept ahead of
 // the wire; anything below a few frames is no buffer at all.
-func NewConnSender(conn voice.Conn, bufferFrames int) *ConnSender {
+func NewConnSender(conn voice.Conn, bufferFrames int, logger *slog.Logger) *ConnSender {
 	if bufferFrames < 3 {
 		bufferFrames = 3
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	s := &ConnSender{
 		conn:   conn,
 		queue:  make(chan []byte, bufferFrames),
 		closed: make(chan struct{}),
+		logger: logger,
 	}
 	conn.SetOpusFrameProvider(s)
 	return s
@@ -90,13 +100,23 @@ func (s *ConnSender) ProvideOpusFrame() ([]byte, error) {
 	select {
 	case frame := <-s.queue:
 		s.played.Add(1)
+		if s.dry >= dryFramesWorthSaying {
+			s.logger.Warn("voice: the audio buffer ran dry",
+				"frames", s.dry, "ms", s.dry*frameMs)
+		}
+		s.dry = 0
 		return frame, nil
 	case <-s.closed:
 		return nil, io.EOF
 	default:
+		s.dry++
 		return nil, nil
 	}
 }
+
+// dryFramesWorthSaying is how long the buffer has to be empty before it is a
+// gap in the audio rather than the space between two frames.
+const dryFramesWorthSaying = 3
 
 // Close ends the pull. The connection's audio sender calls it when the
 // connection goes away.

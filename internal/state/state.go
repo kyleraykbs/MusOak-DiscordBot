@@ -381,6 +381,33 @@ func (s *Store) RoomFor(ctx context.Context, guildID, channelID string) (string,
 	return roomID, true, nil
 }
 
+// RoomMapping is one voice channel's remembered room.
+type RoomMapping struct {
+	GuildID   string
+	ChannelID string
+	RoomID    string
+}
+
+// Rooms lists every remembered mapping, which is what a restart needs to put
+// the bot back where it was.
+func (s *Store) Rooms(ctx context.Context) ([]RoomMapping, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT guild_id, channel_id, room_id FROM rooms ORDER BY guild_id, channel_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RoomMapping
+	for rows.Next() {
+		var m RoomMapping
+		if err := rows.Scan(&m.GuildID, &m.ChannelID, &m.RoomID); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // SetRoom records the mapping.
 func (s *Store) SetRoom(ctx context.Context, guildID, channelID, roomID string) error {
 	_, err := s.db.ExecContext(ctx, `
