@@ -14,8 +14,8 @@ github.com/gorilla/websocket v1.4.2 h1:+/TMaTYc4QFitKJxsQ7Yye35DkWvkdLcvGKqM+x0U
 github.com/gorilla/websocket v1.4.2/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
-github.com/kyleraykbs/MusOak v0.0.0-20261012095135-c3eb509118f9 h1:NwZbwvEIVHVaeFr89uiZS2CwRx8sacxBHkaV4e9hD/Y=
-github.com/kyleraykbs/MusOak v0.0.0-20261012095135-c3eb509118f9/go.mod h1:phWW4d3rS1XmmQewAAhjWHYJOBXS5zK+PRTdwbli1Eo=
+github.com/kyleraykbs/MusOak v0.0.0-20261012110310-c40bde3969b5 h1:siwIgZ3foYjnRFsJDWhbNgHQQ7+Szqyo1pfzKL+rEXA=
+github.com/kyleraykbs/MusOak v0.0.0-20261012110310-c40bde3969b5/go.mod h1:phWW4d3rS1XmmQewAAhjWHYJOBXS5zK+PRTdwbli1Eo=
 github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
