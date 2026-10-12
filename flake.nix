@@ -9,9 +9,19 @@
     musoak.url = "github:kyleraykbs/MusOak";
   };
 
-  outputs = inputs@{ flake-parts, ... }:
+  outputs = inputs@{ self, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+
+      flake.nixosModules = {
+        musoak-discord-bot =
+          { config, lib, pkgs, ... }:
+          import ./nix/module.nix {
+            inherit config lib pkgs;
+            defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.musoak-discord-bot;
+          };
+        default = self.nixosModules.musoak-discord-bot;
+      };
 
       perSystem = { pkgs, system, inputs', ... }:
         let

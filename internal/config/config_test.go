@@ -142,6 +142,23 @@ func TestThePlaceholderNameDefaultsAndSurvivesBlank(t *testing.T) {
 	}
 }
 
+func TestThePasswordCanComeFromTheEnvironment(t *testing.T) {
+	// A config whose password is blank is valid when the environment carries
+	// it: that is how a deployment keeps it out of the file.
+	path := writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b"}}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("a blank password was accepted without the environment")
+	}
+	t.Setenv("MUSOAK_DISCORD_PASSWORD", "from-env")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with the password in the environment: %v", err)
+	}
+	if cfg.Account.Password != "from-env" {
+		t.Errorf("password = %q, want the environment's", cfg.Account.Password)
+	}
+}
+
 func TestValidateNamesWhatIsMissing(t *testing.T) {
 	cases := []struct {
 		mutate func(*Config)

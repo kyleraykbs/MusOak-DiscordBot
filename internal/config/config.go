@@ -185,6 +185,11 @@ func applyEnv(cfg *Config) {
 	if token := os.Getenv("MUSOAK_DISCORD_TOKEN"); token != "" {
 		cfg.Token = token
 	}
+	// The placeholder's password is a secret like the token, and a deployment
+	// that keeps one out of the file keeps the other out too.
+	if password := os.Getenv("MUSOAK_DISCORD_PASSWORD"); password != "" {
+		cfg.Account.Password = password
+	}
 }
 
 // Validate reports what would stop the bot from running.
