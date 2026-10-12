@@ -64,6 +64,11 @@ type Sink struct {
 	// bitrateKbps is what the encoder targets: the voice channel's own, which
 	// is where Discord caps it. Zero keeps the default.
 	bitrateKbps int
+	// volume is applied before encoding; zero keeps the default.
+	volume float64
+	// headerPackets counts the Ogg headers already dropped for this run: the
+	// first two packets of a stream are OpusHead and OpusTags, not audio.
+	headerPackets int
 	// playedBase is the sender's pull count when this run began. The sender
 	// counts for the whole connection; a position belongs to one run, so the
 	// difference is what this run has played.
@@ -159,6 +164,14 @@ func (s *Sink) Play(ctx context.Context, track client.SinkTrack) error {
 func (s *Sink) SetBitrate(kbps int) {
 	s.mu.Lock()
 	s.bitrateKbps = kbps
+	s.mu.Unlock()
+}
+
+// SetVolume sets what the encoder is fed, as a fraction of the file's own
+// level. Zero keeps the default.
+func (s *Sink) SetVolume(volume float64) {
+	s.mu.Lock()
+	s.volume = volume
 	s.mu.Unlock()
 }
 
@@ -295,6 +308,9 @@ func (s *Sink) stream(ctx context.Context) error {
 		}
 
 		pkt, err := s.read()
+		if err == nil && s.dropHeaderPacket() {
+			continue // OpusHead or OpusTags: a header is not a frame
+		}
 		if err != nil {
 			if s.seekPending() {
 				continue
@@ -351,7 +367,8 @@ func (s *Sink) send(ctx context.Context, pkt []byte) error {
 // is still there.
 func (s *Sink) launch(ctx context.Context) error {
 	s.mu.Lock()
-	path, pos, bitrate, prev := s.path, s.posMs, s.bitrateKbps, s.proc
+	path, pos, bitrate, volume, prev := s.path, s.posMs, s.bitrateKbps, s.volume, s.proc
+	s.headerPackets = 0
 	s.mu.Unlock()
 	if prev != nil {
 		prev.kill()
@@ -361,7 +378,7 @@ func (s *Sink) launch(ctx context.Context) error {
 	if resolved, err := exec.LookPath(bin); err == nil {
 		bin = resolved
 	}
-	args := ffmpegArgs(path, pos, bitrate)
+	args := ffmpegArgs(path, pos, bitrate, volume)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// Own process group: a cancelled ctx (or a seek's kill) takes every
 	// process the launch made, so the pipe closes and the reader wakes.
@@ -403,6 +420,19 @@ func (s *Sink) read() ([]byte, error) {
 		return nil, err
 	}
 	return pkt, nil
+}
+
+// dropHeaderPacket reports whether this packet is one of the stream's two
+// headers, which must never be sent as audio: they are a codec descriptor and
+// a comment block, and a decoder handed either produces noise.
+func (s *Sink) dropHeaderPacket() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.headerPackets >= 2 {
+		return false
+	}
+	s.headerPackets++
+	return true
 }
 
 // waitWhilePaused blocks while the stream is parked.

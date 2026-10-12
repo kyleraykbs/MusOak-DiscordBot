@@ -16,6 +16,9 @@ import (
 // connection when the config does not say: 25 frames of 20ms.
 const DefaultAudioBufferMs = 500
 
+// DefaultVolume is what the bot plays at unless the config says otherwise.
+const DefaultVolume = 0.75
+
 // Account is the placeholder musoak account: the room member named
 // "Discord Bot" that plays the room's mixed queue and holds every unlinked
 // user's queue items, playlists, favorites and plays.
@@ -50,6 +53,10 @@ type Config struct {
 	// 20ms send loop and be heard as a drop. Default 500; the useful range is
 	// about 100 (snappy pauses) to 2000 (very jittery hosts).
 	AudioBufferMs int `json:"audioBufferMs,omitempty"`
+	// AudioVolume is what the bot plays at, as a fraction of each file's own
+	// level. Zero means the default (0.75): music is mastered hot and Discord's
+	// opus has no headroom to give back.
+	AudioVolume float64 `json:"audioVolume,omitempty"`
 	// AudioBitrateKbps overrides the encoder's bitrate. Zero follows the voice
 	// channel's own setting, which is what Discord caps the audio at — a
 	// boosted channel is where a higher number has any effect.
@@ -62,6 +69,7 @@ func Default() *Config {
 	return &Config{
 		Account:       Account{DisplayName: "Discord Bot"},
 		AudioBufferMs: DefaultAudioBufferMs,
+		AudioVolume:   DefaultVolume,
 		State:         filepath.Join(dataDir(), "musoak-discord-bot", "state.db"),
 		CacheDir:      filepath.Join(cacheDir(), "musoak-discord-bot"),
 	}
@@ -133,6 +141,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.AudioBufferMs == 0 {
 		cfg.AudioBufferMs = DefaultAudioBufferMs
+	}
+	if cfg.AudioVolume == 0 {
+		cfg.AudioVolume = DefaultVolume
 	}
 	if cfg.Account.DisplayName == "" {
 		// An explicitly blanked name means the default, JSON cannot tell

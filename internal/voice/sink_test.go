@@ -18,6 +18,7 @@ import (
 type fakeSender struct {
 	mu         sync.Mutex
 	packets    int
+	frames     [][]byte
 	speaking   bool
 	drainCount int
 }
@@ -26,6 +27,7 @@ func (f *fakeSender) Send(packet []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.packets++
+	f.frames = append(f.frames, append([]byte(nil), packet...))
 	return nil
 }
 
@@ -48,6 +50,12 @@ func (f *fakeSender) count() int {
 	return f.packets
 }
 
+func (f *fakeSender) recorded() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.frames...)
+}
+
 func (f *fakeSender) drains() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -60,9 +68,36 @@ func (f *fakeSender) isSpeaking() bool {
 	return f.speaking
 }
 
-// writeFixturePages writes each packet group as its own Ogg page file and
-// returns their paths, so a fake ffmpeg can emit them on a schedule.
+// writeFixturePages writes the packet groups as the pages of ONE Ogg stream
+// and returns their paths, so a fake ffmpeg can emit them on a schedule. The
+// first page opens with the two headers every Ogg/Opus stream has — the codec
+// descriptor and the comment block — because the sink drops a stream's first
+// two packets and a fixture without them is not a stream ffmpeg could have
+// produced.
 func writeFixturePages(t *testing.T, groups [][][]byte) []string {
+	t.Helper()
+	withHeaders := make([][][]byte, len(groups))
+	copy(withHeaders, groups)
+	withHeaders[0] = append([][]byte{[]byte("OpusHead"), []byte("OpusTags")}, withHeaders[0]...)
+	return writePages(t, withHeaders)
+}
+
+// writeFixtureStreams writes each group as a stream of its own — headers and
+// all — for tests whose fake ffmpeg is run more than once: every run is a new
+// stream, and every stream has its headers.
+func writeFixtureStreams(t *testing.T, streams ...[][]byte) []string {
+	t.Helper()
+	var paths []string
+	for i, stream := range streams {
+		group := append([][]byte{[]byte("OpusHead"), []byte("OpusTags")}, stream...)
+		paths = append(paths, writePages(t, [][][]byte{group})...)
+		_ = i
+	}
+	return paths
+}
+
+// writePages writes one file per group, no headers added.
+func writePages(t *testing.T, groups [][][]byte) []string {
 	t.Helper()
 	dir := t.TempDir()
 	var paths []string
@@ -106,6 +141,17 @@ func sinkFor(t *testing.T, script string) (*Sink, *fakeSender) {
 	return NewSink(script, sender, nil), sender
 }
 
+func TestFFmpegArgsVolume(t *testing.T) {
+	// Music is mastered hot: the default takes a quarter off, and the config
+	// can say otherwise.
+	if args := ffmpegArgs("/f", 0, 0, 0); !strings.Contains(strings.Join(args, " "), "-af volume=0.750") {
+		t.Errorf("default volume missing: %v", args)
+	}
+	if args := ffmpegArgs("/f", 0, 0, 0.4); !strings.Contains(strings.Join(args, " "), "-af volume=0.400") {
+		t.Errorf("configured volume missing: %v", args)
+	}
+}
+
 func TestFFmpegArgsBitrateFollowsTheChannel(t *testing.T) {
 	// The channel's own bitrate is what Discord caps the audio at, so it is
 	// what the encoder targets; zero falls back to the default, and Discord's
@@ -120,7 +166,7 @@ func TestFFmpegArgsBitrateFollowsTheChannel(t *testing.T) {
 		{512, "-b:a 256k"},
 	}
 	for _, tc := range cases {
-		args := ffmpegArgs("/cache/x.opus", 0, tc.kbps)
+		args := ffmpegArgs("/cache/x.opus", 0, tc.kbps, 0)
 		if joined := strings.Join(args, " "); !strings.Contains(joined, tc.want) {
 			t.Errorf("bitrate %d: %s, want %s", tc.kbps, joined, tc.want)
 		}
@@ -128,7 +174,7 @@ func TestFFmpegArgsBitrateFollowsTheChannel(t *testing.T) {
 }
 
 func TestFFmpegArgsSeekAndFormat(t *testing.T) {
-	args := ffmpegArgs("/cache/x.opus", 91_500, 0)
+	args := ffmpegArgs("/cache/x.opus", 91_500, 0, 0)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-ss 91.500") {
 		t.Errorf("no input seek at the position: %s", joined)
@@ -138,7 +184,7 @@ func TestFFmpegArgsSeekAndFormat(t *testing.T) {
 	if ss < 0 || in < 0 || ss > in {
 		t.Errorf("-ss must come before -i: %s", joined)
 	}
-	for _, want := range []string{"-ar 48000", "-ac 2", "-frame_duration 20", "-f opus", "pipe:1", "-application audio"} {
+	for _, want := range []string{"-ar 48000", "-ac 2", "-frame_duration 20", "-f opus", "pipe:1", "-application audio", "-page_duration 100000"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
 		}
@@ -147,7 +193,7 @@ func TestFFmpegArgsSeekAndFormat(t *testing.T) {
 		// Position zero is not worth a seek flag.
 		t.Errorf("zero position should not add -ss: %s", joined)
 	}
-	if args := ffmpegArgs("p", 0, 0); indexOf(args, "-ss") != -1 {
+	if args := ffmpegArgs("p", 0, 0, 0); indexOf(args, "-ss") != -1 {
 		t.Errorf("position 0 produced a seek: %v", args)
 	}
 }
@@ -353,13 +399,32 @@ func TestStopEndsPlaybackPromptly(t *testing.T) {
 // A track change must not throw away what is already queued: that tail is the
 // song that just ended, and it is what covers ffmpeg starting the next one.
 // A seek is the opposite — the frames queued are from the position being left.
+// A stream's first two packets are OpusHead and OpusTags: sending them as
+// frames puts two junk packets into the room at the start of every song.
+func TestTheStreamHeadersAreNotSentAsAudio(t *testing.T) {
+	pages := writeFixturePages(t, [][][]byte{{[]byte("first-audio"), []byte("second-audio")}})
+	script := writeScript(t, "cat "+pages[0])
+	sink, sender := sinkFor(t, script)
+
+	if err := sink.Play(context.Background(), client.SinkTrack{Path: "a.opus", PositionMs: 0}); err != nil {
+		t.Fatalf("Play: %v", err)
+	}
+	got := sender.recorded()
+	if len(got) != 2 {
+		t.Fatalf("frames sent = %d, want the two audio packets and no headers", len(got))
+	}
+	if string(got[0]) != "first-audio" || string(got[1]) != "second-audio" {
+		t.Errorf("frames = %q, %q", got[0], got[1])
+	}
+}
+
 func TestATrackChangeKeepsTheTailAndASeekDropsIt(t *testing.T) {
-	pages := writeFixturePages(t, [][][]byte{
-		{[]byte("a"), []byte("b")},
-		{[]byte("c"), []byte("d"), []byte("e")},
-	})
-	slow := writeScript(t, "cat "+pages[0], "sleep 30")
-	fast := writeScript(t, "cat "+pages[1])
+	streams := writeFixtureStreams(t,
+		[][]byte{[]byte("a"), []byte("b")},
+		[][]byte{[]byte("c"), []byte("d"), []byte("e")},
+	)
+	slow := writeScript(t, "cat "+streams[0], "sleep 30")
+	fast := writeScript(t, "cat "+streams[1])
 
 	sink, sender := sinkFor(t, slow)
 	ctx1, cancel1 := context.WithCancel(context.Background())
@@ -390,12 +455,12 @@ func TestATrackChangeKeepsTheTailAndASeekDropsIt(t *testing.T) {
 }
 
 func TestANewTrackWaitsForTheOldRunToLeave(t *testing.T) {
-	pages := writeFixturePages(t, [][][]byte{
-		{[]byte("a"), []byte("b")},
-		{[]byte("c"), []byte("d"), []byte("e")},
-	})
-	slow := writeScript(t, "cat "+pages[0], "sleep 30")
-	fast := writeScript(t, "cat "+pages[1])
+	streams := writeFixtureStreams(t,
+		[][]byte{[]byte("a"), []byte("b")},
+		[][]byte{[]byte("c"), []byte("d"), []byte("e")},
+	)
+	slow := writeScript(t, "cat "+streams[0], "sleep 30")
+	fast := writeScript(t, "cat "+streams[1])
 
 	sink, sender := sinkFor(t, slow)
 	ctx1, cancel1 := context.WithCancel(context.Background())

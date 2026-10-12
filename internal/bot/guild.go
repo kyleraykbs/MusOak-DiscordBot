@@ -254,8 +254,10 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 		bitrate = channelBitrateKbps(b.session, channelID)
 	}
 	sink.SetBitrate(bitrate)
+	sink.SetVolume(b.cfg.AudioVolume)
 	b.logger.Info("bot: playing into the channel",
-		"channel", channelID, "bitrate_kbps", bitrate, "buffer_ms", bufferFrames*voice.FrameMs)
+		"channel", channelID, "bitrate_kbps", bitrate, "volume", b.cfg.AudioVolume,
+		"buffer_ms", bufferFrames*voice.FrameMs)
 	participant := client.NewParticipant(room, b.cache, sink, b.logger)
 	tracker := newPlayTracker(b.store, roomID, b.logger)
 	participant.OnEvent = tracker.event

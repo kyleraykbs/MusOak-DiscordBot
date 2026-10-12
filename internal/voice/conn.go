@@ -30,8 +30,11 @@ type ConnSender struct {
 	played atomic.Int64 // frames the connection has actually pulled
 	// dry counts the pulls that found nothing queued since the last one that
 	// did: a run of them is a gap in the audio, and it is worth saying out
-	// loud rather than leaving to be heard.
-	dry int
+	// loud rather than leaving to be heard. gaps is how many such runs there
+	// have been, and worstFrames the longest of them.
+	dry         int
+	gaps        int
+	worstFrames int
 }
 
 // NewConnSender attaches a frame provider to the connection and returns the
@@ -100,9 +103,20 @@ func (s *ConnSender) ProvideOpusFrame() ([]byte, error) {
 	select {
 	case frame := <-s.queue:
 		s.played.Add(1)
-		if s.dry >= dryFramesWorthSaying {
-			s.logger.Warn("voice: the audio buffer ran dry",
-				"frames", s.dry, "ms", s.dry*frameMs)
+		if s.dry > 0 {
+			s.gaps++
+			if s.dry > s.worstFrames {
+				s.worstFrames = s.dry
+			}
+			if s.dry >= dryFramesWorthSaying {
+				s.logger.Warn("voice: the audio buffer ran dry",
+					"frames", s.dry, "ms", s.dry*frameMs, "gaps", s.gaps, "worst_ms", s.worstFrames*frameMs)
+			} else {
+				// Short enough to be a click rather than a hole, and still
+				// worth counting: a run of these is what choppy sounds like.
+				s.logger.Debug("voice: the audio buffer briefly empty",
+					"frames", s.dry, "ms", s.dry*frameMs, "gaps", s.gaps)
+			}
 		}
 		s.dry = 0
 		return frame, nil

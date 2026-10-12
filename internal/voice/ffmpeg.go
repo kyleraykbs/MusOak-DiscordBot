@@ -14,6 +14,11 @@ const frameMs = 20
 // FrameMs is frameMs for callers that size a buffer in milliseconds.
 const FrameMs = frameMs
 
+// DefaultVolume is how loud the bot plays when the config does not say. Music
+// arrives mastered hot, and Discord's opus is not the place to find headroom;
+// three quarters is where a full-scale mix stops clipping on the way in.
+const DefaultVolume = 0.75
+
 // defaultBitrateKbps is what the encoder targets when the channel says
 // nothing: comfortably above the 64kbps a plain channel allows, well inside
 // what a boosted one does.
@@ -32,7 +37,7 @@ const MaxVoiceBitrateKbps = maxVoiceBitrateKbps
 // there, so matching it is both the loudest and the highest quality the
 // channel can carry; the music application is what libopus wants for songs
 // rather than speech.
-func ffmpegArgs(path string, positionMs int64, bitrateKbps int) []string {
+func ffmpegArgs(path string, positionMs int64, bitrateKbps int, volume float64) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
 	}
@@ -45,15 +50,23 @@ func ffmpegArgs(path string, positionMs int64, bitrateKbps int) []string {
 	if bitrateKbps > maxVoiceBitrateKbps {
 		bitrateKbps = maxVoiceBitrateKbps
 	}
+	if volume <= 0 {
+		volume = DefaultVolume
+	}
 	return append(args,
 		"-i", path,
 		"-vn",
 		"-ar", "48000",
 		"-ac", "2",
+		"-af", "volume="+strconv.FormatFloat(volume, 'f', 3, 64),
 		"-c:a", "libopus",
 		"-application", "audio",
 		"-b:a", strconv.Itoa(bitrateKbps)+"k",
 		"-frame_duration", strconv.Itoa(frameMs),
+		// A page per tenth of a second instead of ffmpeg's default second: a
+		// fresh run hands over its first audio packets immediately rather than
+		// after a page fills, which is what a transition is waiting for.
+		"-page_duration", "100000",
 		"-f", "opus",
 		"pipe:1",
 	)

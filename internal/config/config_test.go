@@ -97,6 +97,28 @@ func TestEnvironmentTokenWinsOverFile(t *testing.T) {
 	}
 }
 
+func TestTheVolumeDefault(t *testing.T) {
+	if got := Default().AudioVolume; got != DefaultVolume {
+		t.Errorf("default volume = %v, want %v", got, DefaultVolume)
+	}
+	path := writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"},"audioVolume":0}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AudioVolume != DefaultVolume {
+		t.Errorf("volume = %v, want the default", cfg.AudioVolume)
+	}
+	path = writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"},"audioVolume":0.5}`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AudioVolume != 0.5 {
+		t.Errorf("volume = %v, want 0.5 as configured", cfg.AudioVolume)
+	}
+}
+
 func TestThePlaceholderNameDefaultsAndSurvivesBlank(t *testing.T) {
 	if got := Default().Account.DisplayName; got != "Discord Bot" {
 		t.Errorf("default displayName = %q", got)
