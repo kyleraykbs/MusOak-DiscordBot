@@ -29,8 +29,8 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/klauspost/compress v1.18.4 h1:RPhnKRAQ4Fh8zU2FY/6ZFDwTVTxgJ/EMydqSTzE9a2c=
 github.com/klauspost/compress v1.18.4/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
-github.com/kyleraykbs/MusOak v0.0.0-20261012221213-5e0c74f223c1 h1:i0Eyw/AmEgSqhLcVSN57QF9W84pw1PABJVllA+A5IfA=
-github.com/kyleraykbs/MusOak v0.0.0-20261012221213-5e0c74f223c1/go.mod h1:phWW4d3rS1XmmQewAAhjWHYJOBXS5zK+PRTdwbli1Eo=
+github.com/kyleraykbs/MusOak v0.0.0-20261012223047-414952cf90c6 h1:Uwih2T0cNomdx7sAaV6tWr2QSaO8kSnDZpZVQMJFZNg=
+github.com/kyleraykbs/MusOak v0.0.0-20261012223047-414952cf90c6/go.mod h1:phWW4d3rS1XmmQewAAhjWHYJOBXS5zK+PRTdwbli1Eo=
 github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=

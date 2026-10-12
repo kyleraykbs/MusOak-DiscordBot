@@ -236,6 +236,8 @@ func (s *Sink) Seek(ctx context.Context, positionMs int64) error {
 		// seek. A parked loop finds the request when it resumes instead.
 		rp.kill()
 	}
+	// Whatever is queued was read from the position being left, so it goes.
+	s.sender.Drain()
 	return nil
 }
 
@@ -326,10 +328,12 @@ func (s *Sink) stream(ctx context.Context) error {
 	}
 }
 
-// abort is the exit for cancel, stop and failure: what is queued is not wanted
-// and this member is not speaking.
+// abort is the exit for cancel, stop and failure. What is queued stays: on a
+// track change it is the tail of the song that just ended, and playing it out
+// is what covers the relaunch of ffmpeg for the next one — draining it there
+// was the gap heard between songs. Pause, seek and stop drop their stale
+// frames themselves.
 func (s *Sink) abort() {
-	s.sender.Drain()
 	_ = s.sender.Speaking(false)
 }
 

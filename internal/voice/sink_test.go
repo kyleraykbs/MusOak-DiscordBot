@@ -16,10 +16,10 @@ import (
 
 // fakeSender records what the sink hands over.
 type fakeSender struct {
-	mu       sync.Mutex
-	packets  int
-	speaking bool
-	drains   int
+	mu         sync.Mutex
+	packets    int
+	speaking   bool
+	drainCount int
 }
 
 func (f *fakeSender) Send(packet []byte) error {
@@ -39,13 +39,19 @@ func (f *fakeSender) Speaking(on bool) error {
 func (f *fakeSender) Drain() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.drains++
+	f.drainCount++
 }
 
 func (f *fakeSender) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.packets
+}
+
+func (f *fakeSender) drains() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.drainCount
 }
 
 func (f *fakeSender) isSpeaking() bool {
@@ -342,6 +348,45 @@ func TestStopEndsPlaybackPromptly(t *testing.T) {
 	if sender.isSpeaking() {
 		t.Error("still speaking after Stop")
 	}
+}
+
+// A track change must not throw away what is already queued: that tail is the
+// song that just ended, and it is what covers ffmpeg starting the next one.
+// A seek is the opposite — the frames queued are from the position being left.
+func TestATrackChangeKeepsTheTailAndASeekDropsIt(t *testing.T) {
+	pages := writeFixturePages(t, [][][]byte{
+		{[]byte("a"), []byte("b")},
+		{[]byte("c"), []byte("d"), []byte("e")},
+	})
+	slow := writeScript(t, "cat "+pages[0], "sleep 30")
+	fast := writeScript(t, "cat "+pages[1])
+
+	sink, sender := sinkFor(t, slow)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	done1 := make(chan error, 1)
+	go func() { done1 <- sink.Play(ctx1, client.SinkTrack{Path: "one.opus", PositionMs: 0}) }()
+	waitFor(t, 5*time.Second, "the first track", func() bool { return sender.count() >= 1 })
+
+	// The room moves on: the old run is cancelled, and what it queued stays.
+	cancel1()
+	<-done1
+	if drained := sender.drains(); drained != 0 {
+		t.Errorf("the track change drained the buffer (%d drains)", drained)
+	}
+
+	// A seek, on the other hand, must drop frames read from the old position.
+	before := sender.drains()
+	sink.bin = fast
+	done2 := make(chan error, 1)
+	go func() { done2 <- sink.Play(context.Background(), client.SinkTrack{Path: "two.opus", PositionMs: 0}) }()
+	waitFor(t, 5*time.Second, "the second track", func() bool { return sender.count() >= 3 })
+	if err := sink.Seek(context.Background(), 5_000); err != nil {
+		t.Fatal(err)
+	}
+	if sender.drains() <= before {
+		t.Error("a seek did not drop the frames read from the old position")
+	}
+	<-done2
 }
 
 func TestANewTrackWaitsForTheOldRunToLeave(t *testing.T) {
