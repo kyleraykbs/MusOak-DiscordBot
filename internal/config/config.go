@@ -88,11 +88,13 @@ func Load(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) && !explicit {
-			applyEnv(cfg)
-			if verr := cfg.Validate(); verr != nil {
-				return nil, fmt.Errorf("config %s: %w", path, verr)
+			// A bot with no config has nothing to run on, so the first start
+			// writes a starter one and says exactly where it is and how to
+			// fill it - the token may also come from the environment instead.
+			if writeErr := writeStarter(path); writeErr != nil {
+				return nil, fmt.Errorf("open config: %w", writeErr)
 			}
-			return cfg, nil
+			return nil, fmt.Errorf("wrote a starter config to %s — put your Discord bot token in its \"token\" field (or set MUSOAK_DISCORD_TOKEN instead), fill in the MusOak server and the placeholder account, then start again", path)
 		}
 		return nil, fmt.Errorf("open config: %w", err)
 	}
@@ -126,6 +128,24 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// writeStarter lays down a config to fill in: owner-only, because the token
+// it is waiting for will live there.
+func writeStarter(path string) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	starter := Config{
+		Account: Account{DisplayName: "Discord Bot"},
+	}
+	body, err := json.MarshalIndent(starter, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(body, '\n'), 0o600)
 }
 
 func applyEnv(cfg *Config) {

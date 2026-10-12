@@ -29,6 +29,7 @@ type Bot struct {
 	// ctx is the service lifetime; participants are children of it.
 	ctx    context.Context
 	cancel context.CancelFunc
+	appID  string
 
 	mu     sync.Mutex
 	guilds map[string]*guildState
@@ -64,6 +65,14 @@ func New(cfg *config.Config, store *state.Store, cache *client.Cache, logger *sl
 		// own goroutine so one command can never hold the gateway.
 		go b.onInteraction(i)
 	})
+	session.AddHandler(func(s *discordgo.Session, g *discordgo.GuildCreate) {
+		// Invited while running: with no configured list the commands belong
+		// in every server the bot is in, so they arrive with it.
+		if len(b.cfg.Guilds) > 0 {
+			return
+		}
+		go b.registerGuild(g.ID)
+	})
 	return b, nil
 }
 
@@ -84,20 +93,47 @@ func (b *Bot) Open() error {
 	if err != nil {
 		return fmt.Errorf("read the application: %w", err)
 	}
-	cmds := commandDefs()
-	if len(b.cfg.Guilds) == 0 {
-		if _, err := b.session.ApplicationCommandBulkOverwrite(app.ID, "", cmds); err != nil {
-			return fmt.Errorf("register commands globally: %w", err)
+	b.mu.Lock()
+	b.appID = app.ID
+	b.mu.Unlock()
+
+	// Guild-scoped commands appear the moment they are registered, where a
+	// global set can take an hour. With no list configured that means every
+	// server the bot is already in, and servers it joins later register their
+	// own on arrival (see the GuildCreate handler in New).
+	guildIDs := b.cfg.Guilds
+	if len(guildIDs) == 0 {
+		for _, guild := range b.session.State.Guilds {
+			guildIDs = append(guildIDs, guild.ID)
 		}
-		b.logger.Info("bot: commands registered globally", "count", len(cmds))
+	}
+	if len(guildIDs) == 0 {
+		b.logger.Info("bot: no servers yet — invite it and the commands register on arrival")
 		return nil
 	}
-	for _, guildID := range b.cfg.Guilds {
-		if _, err := b.session.ApplicationCommandBulkOverwrite(app.ID, guildID, cmds); err != nil {
-			return fmt.Errorf("register commands in guild %s: %w", guildID, err)
+	for _, guildID := range guildIDs {
+		if err := b.registerGuild(guildID); err != nil {
+			return err
 		}
 	}
-	b.logger.Info("bot: commands registered", "guilds", len(b.cfg.Guilds), "count", len(cmds))
+	b.logger.Info("bot: commands registered", "guilds", len(guildIDs), "count", len(commandDefs()))
+	return nil
+}
+
+// registerGuild puts the whole command set into one server, replacing whatever
+// was there so a renamed command cannot linger.
+func (b *Bot) registerGuild(guildID string) error {
+	b.mu.Lock()
+	appID := b.appID
+	b.mu.Unlock()
+	if appID == "" {
+		return nil // not connected yet; Open registers everything
+	}
+	if _, err := b.session.ApplicationCommandBulkOverwrite(appID, guildID, commandDefs()); err != nil {
+		b.logger.Warn("bot: could not register commands", "guild", guildID, "error", err)
+		return nil
+	}
+	b.logger.Info("bot: commands registered in a server", "guild", guildID)
 	return nil
 }
 

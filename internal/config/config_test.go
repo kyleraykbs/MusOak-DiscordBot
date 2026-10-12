@@ -16,6 +16,44 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
+func TestTheFirstRunWritesAStarterConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MUSOAK_DISCORD_BOT_CONFIG", "")
+	t.Setenv("MUSOAK_DISCORD_TOKEN", "")
+	path := filepath.Join(dir, "musoak-discord-bot", "config.json")
+
+	_, err := Load("")
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("first Load = %v, want an error naming %s", err, path)
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("no starter config: %v", statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("starter config mode = %o, want 600 (the token goes in it)", perm)
+	}
+
+	// The starter parses as this bot's own config, and the second start says
+	// what is missing rather than writing anything again.
+	_, err = Load(path)
+	if err == nil || !strings.Contains(err.Error(), "MUSOAK_DISCORD_TOKEN") {
+		t.Fatalf("second Load = %v, want the token to be what is missing", err)
+	}
+}
+
+func TestAnExplicitMissingConfigIsNotCreated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nowhere", "config.json")
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "open config") {
+		t.Fatalf("Load(explicit missing) = %v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("an explicit path was written anyway: %v", statErr)
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	path := writeConfig(t, `{
 		"token": "x", "serverURL": "http://s", "account": {"username": "b", "password": "p"},

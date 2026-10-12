@@ -53,6 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("bot running",
+		"config", config.ResolvePath(*configPath),
 		"server", cfg.ServerURL,
 		"placeholder", cfg.Account.Username,
 		"guilds", len(cfg.Guilds))

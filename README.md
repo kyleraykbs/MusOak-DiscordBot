@@ -61,14 +61,19 @@ listen along.
 2. **A musoak account for the placeholder** — a normal account on your
    server, e.g. `musoak-discord-bot`. (If the server has registration closed,
    create it as an admin.)
-3. **A config** — copy `config.example.json` to
-   `~/.config/musoak-discord-bot/config.json`:
+3. **A config** — the bot writes you one. Run it once with no config and it
+   creates a starter at `~/.config/musoak-discord-bot/config.json` (owner-only,
+   since the token goes in it), prints where it is, and stops; fill it in and
+   start it again. `--config PATH` overrides the path,
+   `MUSOAK_DISCORD_BOT_CONFIG` sets it without the flag, and the token may
+   instead come from `MUSOAK_DISCORD_TOKEN` so a deployment can keep the secret
+   out of the file entirely.
 
    |key|meaning|
    |---|---|
    |`token`|Discord bot token; `MUSOAK_DISCORD_TOKEN` wins over the file|
    |`serverURL`|the musoak server|
-   |`guilds`|servers to register commands in (instant). Empty = global (up to an hour)|
+   |`guilds`|servers to register commands in. Empty = every server the bot is in, registered the moment it is invited (a global set would take an hour to appear)|
    |`account.username/password`|the placeholder account|
    |`account.displayName`|defaults to `"Discord Bot"`, pinned on every start|
    |`state`|sqlite path, default `$XDG_DATA_HOME/musoak-discord-bot/state.db` (mode 0600 — it holds credentials)|
