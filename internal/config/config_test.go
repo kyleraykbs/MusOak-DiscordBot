@@ -1,0 +1,88 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	path := writeConfig(t, `{
+		"token": "x", "serverURL": "http://s", "account": {"username": "b", "password": "p"},
+		"typoKey": true
+	}`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "typoKey") {
+		t.Fatalf("unknown key accepted: %v", err)
+	}
+}
+
+func TestLoadRejectsTrailingData(t *testing.T) {
+	path := writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"}} {}`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("trailing data accepted: %v", err)
+	}
+}
+
+func TestLoadFillsBlankedPathsWithDefaults(t *testing.T) {
+	path := writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"},"state":"","cacheDir":""}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.State != Default().State {
+		t.Errorf("state = %q, want the default %q", cfg.State, Default().State)
+	}
+	if cfg.CacheDir != Default().CacheDir {
+		t.Errorf("cacheDir = %q, want the default %q", cfg.CacheDir, Default().CacheDir)
+	}
+}
+
+func TestEnvironmentTokenWinsOverFile(t *testing.T) {
+	path := writeConfig(t, `{"token":"from-file","serverURL":"http://s","account":{"username":"b","password":"p"}}`)
+	t.Setenv("MUSOAK_DISCORD_TOKEN", "from-env")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Token != "from-env" {
+		t.Errorf("token = %q, want the environment's", cfg.Token)
+	}
+}
+
+func TestValidateNamesWhatIsMissing(t *testing.T) {
+	cases := []struct {
+		mutate func(*Config)
+		want   string
+	}{
+		{func(c *Config) { c.Token = "" }, "token"},
+		{func(c *Config) { c.ServerURL = "" }, "serverURL"},
+		{func(c *Config) { c.Account.Username = "" }, "account.username"},
+		{func(c *Config) { c.Account.Password = "" }, "account.password"},
+	}
+	for _, tc := range cases {
+		cfg := Default()
+		cfg.Token, cfg.ServerURL = "t", "http://s"
+		cfg.Account = Account{Username: "b", Password: "p"}
+		tc.mutate(cfg)
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("Validate() = %v, want an error naming %q", err, tc.want)
+		}
+	}
+	cfg := Default()
+	cfg.Token, cfg.ServerURL = "t", "http://s"
+	cfg.Account = Account{Username: "b", Password: "p"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("a complete config is invalid: %v", err)
+	}
+}
