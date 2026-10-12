@@ -67,7 +67,7 @@ func (b *Bot) dispatch(i *discordgo.InteractionCreate, data discordgo.Applicatio
 	case "join":
 		return b.cmdJoin(ctx, i, data)
 	case "leave":
-		b.leaveVoice(i.GuildID)
+		b.leaveVoice(ctx, i.GuildID)
 		return "Left the voice channel — the room keeps its queue.", nil
 	case "play":
 		return b.cmdPlay(ctx, i, data)

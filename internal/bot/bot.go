@@ -25,6 +25,7 @@ type Bot struct {
 	accounts *accounts
 	cache    *client.Cache
 	session  *discordgo.Session
+	voice    *voiceHub
 
 	// ctx is the service lifetime; participants are children of it.
 	ctx    context.Context
@@ -60,6 +61,13 @@ func New(cfg *config.Config, store *state.Store, cache *client.Cache, logger *sl
 		cancel:   cancel,
 		guilds:   map[string]*guildState{},
 	}
+	b.voice = newVoiceHub(session, logger)
+	session.AddHandler(func(s *discordgo.Session, update *discordgo.VoiceStateUpdate) {
+		b.voice.handleState(update)
+	})
+	session.AddHandler(func(s *discordgo.Session, update *discordgo.VoiceServerUpdate) {
+		b.voice.handleServer(update)
+	})
 	session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		// Discord's dispatch is synchronous: the slow part always moves to its
 		// own goroutine so one command can never hold the gateway.
@@ -96,6 +104,11 @@ func (b *Bot) Open() error {
 	b.mu.Lock()
 	b.appID = app.ID
 	b.mu.Unlock()
+	// A bot's user id is its application id, which is what the voice manager
+	// needs to recognise its own voice states.
+	if err := b.voice.start(app.ID); err != nil {
+		return err
+	}
 
 	// Guild-scoped commands appear the moment they are registered, where a
 	// global set can take an hour. With no list configured that means every

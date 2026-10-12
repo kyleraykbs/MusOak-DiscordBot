@@ -20,9 +20,14 @@ import (
 
 func main() {
 	configPath := flag.String("config", "", "path to config file (default: $MUSOAK_DISCORD_BOT_CONFIG, else $XDG_CONFIG_HOME/musoak-discord-bot/config.json)")
+	verbose := flag.Bool("verbose", false, "log the voice handshake and every room event (debug level)")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	level := slog.LevelInfo
+	if *verbose {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
 	cfg, err := config.Load(config.ResolvePath(*configPath))
 	if err != nil {

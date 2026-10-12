@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	disgovoice "github.com/disgoorg/disgo/voice"
 
 	"codeberg.org/kyleraykbs/musoak/pkg/client"
 
@@ -69,11 +69,11 @@ func (b *Bot) startGuild(ctx context.Context, guildID, channelID string) (string
 	// Move the connection first: a participant must never stream into a voice
 	// connection that has changed channels under it.
 	b.stopParticipant(g)
-	vc, err := b.session.ChannelVoiceJoin(guildID, channelID, false, false)
+	conn, err := b.voice.open(ctx, guildID, channelID)
 	if err != nil {
-		return "", fmt.Errorf("joining the voice channel: %w", err)
+		return "", err
 	}
-	if err := b.startParticipant(g, guildID, channelID, roomID, vc); err != nil {
+	if err := b.startParticipant(g, guildID, channelID, roomID, conn); err != nil {
 		return "", err
 	}
 	return roomID, nil
@@ -127,7 +127,7 @@ func (b *Bot) ensureRoom(ctx context.Context, guildID, channelID string) (string
 // startParticipant attaches a fresh participant — the placeholder's
 // membership, a voice sink, and the play tracker — and runs it until the room
 // closes or it is replaced.
-func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string, vc *discordgo.VoiceConnection) error {
+func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string, conn disgovoice.Conn) error {
 	var room *client.RoomClient
 	err := b.accounts.withPlaceholder(context.Background(), func(c *client.Client) error {
 		var err error
@@ -138,7 +138,7 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 		return fmt.Errorf("joining room %s: %w", roomID, err)
 	}
 
-	sink := voice.NewSink("ffmpeg", voice.NewDiscordSender(vc), b.logger)
+	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn), b.logger)
 	participant := client.NewParticipant(room, b.cache, sink, b.logger)
 	tracker := newPlayTracker(b.store, roomID, b.logger)
 	participant.OnEvent = tracker.event
@@ -171,7 +171,7 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 			g.voiceChannel = ""
 		}
 		g.mu.Unlock()
-		b.voiceLeave(guildID)
+		b.voice.close(context.Background(), guildID)
 		if err := b.store.ForgetRoom(context.Background(), guildID, channelID); err != nil {
 			b.logger.Warn("bot: forgetting a closed room", "error", err)
 		}
@@ -180,20 +180,13 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 }
 
 // leaveVoice stops the participant and disconnects from the guild's voice.
-func (b *Bot) leaveVoice(guildID string) {
+func (b *Bot) leaveVoice(ctx context.Context, guildID string) {
 	g := b.guild(guildID)
 	b.stopParticipant(g)
 	g.mu.Lock()
 	g.voiceChannel = ""
 	g.mu.Unlock()
-	b.voiceLeave(guildID)
-}
-
-// voiceLeave disconnects the guild's voice connection, if there is one.
-func (b *Bot) voiceLeave(guildID string) {
-	if vc, ok := b.session.VoiceConnections[guildID]; ok && vc != nil {
-		_ = vc.Disconnect()
-	}
+	b.voice.close(ctx, guildID)
 }
 
 // stopAll ends every participant; the process is going away.
