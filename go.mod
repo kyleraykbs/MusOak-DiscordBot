@@ -32,4 +32,4 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
-replace codeberg.org/kyleraykbs/musoak => github.com/kyleraykbs/MusOak v0.0.0-20261012225554-2de128e909bd
+replace codeberg.org/kyleraykbs/musoak => github.com/kyleraykbs/MusOak v0.0.0-20261012231442-66ac124cc3f6

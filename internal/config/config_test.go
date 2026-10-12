@@ -97,6 +97,15 @@ func TestEnvironmentTokenWinsOverFile(t *testing.T) {
 	}
 }
 
+func TestTheBufferAndVolumeDefaults(t *testing.T) {
+	if got := Default().AudioBufferMs; got != DefaultAudioBufferMs {
+		t.Errorf("default buffer = %d, want %d", got, DefaultAudioBufferMs)
+	}
+	if got := Default().AudioVolume; got != DefaultVolume {
+		t.Errorf("default volume = %v, want %v", got, DefaultVolume)
+	}
+}
+
 func TestTheVolumeDefault(t *testing.T) {
 	if got := Default().AudioVolume; got != DefaultVolume {
 		t.Errorf("default volume = %v, want %v", got, DefaultVolume)

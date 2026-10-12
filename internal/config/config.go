@@ -13,8 +13,11 @@ import (
 )
 
 // DefaultAudioBufferMs is how much audio is queued ahead of the voice
-// connection when the config does not say: 25 frames of 20ms.
-const DefaultAudioBufferMs = 1000
+// connection when the config does not say. Three seconds: the bot's own uplink
+// is the one thing it cannot fix, and a stutter there is absorbed by having
+// more audio already through the wire. The cost is that the bot is that far
+// behind the room, which the follower's drift tolerance is told about.
+const DefaultAudioBufferMs = 3000
 
 // DefaultVolume is what the bot plays at unless the config says otherwise.
 const DefaultVolume = 0.5
@@ -48,10 +51,12 @@ type Config struct {
 	// CacheDir is where the media cache keeps the room's songs.
 	CacheDir string `json:"cacheDir"`
 	// AudioBufferMs is how much audio the bot keeps queued ahead of the voice
-	// connection. It absorbs the small hiccups — an ffmpeg relaunch between
-	// songs, a scheduling blip — that would otherwise starve the connection's
-	// 20ms send loop and be heard as a drop. Default 500; the useful range is
-	// about 100 (snappy pauses) to 2000 (very jittery hosts).
+	// connection. It absorbs the hiccups — an ffmpeg relaunch between songs, a
+	// scheduling blip, a stuttering uplink — that would otherwise starve the
+	// connection's 20ms send loop and be heard as a drop. Default 3000; the
+	// useful range is about 500 (snappy pauses) to 5000 (a bad link). The bot
+	// plays that far behind the room, and the follower's drift tolerance
+	// follows this number so the buffer is never mistaken for drift.
 	AudioBufferMs int `json:"audioBufferMs,omitempty"`
 	// AudioVolume is what the bot plays at, as a fraction of each file's own
 	// level. Zero means the default (0.75): music is mastered hot and Discord's

@@ -259,6 +259,9 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 		"channel", channelID, "bitrate_kbps", bitrate, "volume", b.cfg.AudioVolume,
 		"buffer_ms", bufferFrames*voice.FrameMs)
 	participant := client.NewParticipant(room, b.cache, sink, b.logger)
+	// The buffer is a delay by design: the tolerance has to sit past it, or
+	// every beat corrects the buffer with a seek and the audio tears.
+	participant.SetDriftTolerance(int64(bufferFrames)*voice.FrameMs + 2000)
 	tracker := newPlayTracker(b.store, roomID, b.logger)
 	participant.OnEvent = tracker.event
 
