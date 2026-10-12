@@ -13,11 +13,15 @@ import (
 )
 
 // DefaultAudioBufferMs is how much audio is queued ahead of the voice
-// connection when the config does not say. Three seconds: the bot's own uplink
-// is the one thing it cannot fix, and a stutter there is absorbed by having
-// more audio already through the wire. The cost is that the bot is that far
-// behind the room, which the follower's drift tolerance is told about.
-const DefaultAudioBufferMs = 3000
+// connection when the config does not say.
+//
+// It is a straight trade: the buffer is how much of a stall the bot can sit
+// through without a gap, and it is also exactly how far behind the room its
+// audio runs — the frames wait in the queue, so what leaves the wire is that
+// much older. Measured play needed well under a second; a stuttering uplink
+// wants more and pays for it in lag. A second and a half is the compromise,
+// and audioBufferMs moves it either way.
+const DefaultAudioBufferMs = 1500
 
 // DefaultVolume is what the bot plays at unless the config says otherwise.
 const DefaultVolume = 0.5

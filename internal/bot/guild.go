@@ -273,6 +273,27 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 	g.run = run
 	g.mu.Unlock()
 
+	// How far behind the room the audio actually is: the buffer is a delay by
+	// design, and this is the number to watch when it stops feeling like one.
+	go func() {
+		ticker := time.NewTicker(lagReportEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				local, ok := participant.LocalPosition(context.Background())
+				if !ok {
+					continue
+				}
+				b.logger.Debug("bot: room clock and local audio",
+					"room_ms", participant.Position(), "local_ms", local,
+					"behind_ms", participant.Position()-local)
+			}
+		}
+	}()
+
 	go func() {
 		defer close(run.done)
 		backoff := participantRetryFloor
@@ -361,6 +382,10 @@ func (b *Bot) leaveClosedRoom(g *guildState, run *participantRun, guildID, chann
 		b.logger.Warn("bot: forgetting a closed room", "error", err)
 	}
 }
+
+// lagReportEvery is how often the bot says how far behind the room its audio
+// is running.
+const lagReportEvery = 10 * time.Second
 
 // How long a lost room follower waits before trying again, and how far the
 // wait grows when failures repeat.
