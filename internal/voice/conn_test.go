@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	botgateway "github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/disgo/voice"
@@ -133,6 +134,66 @@ func TestFramesWaitOutADaveEpochChange(t *testing.T) {
 	if played := sender.PlayedFrames(); played != 4 {
 		t.Fatalf("played after the change = %d, want 4", played)
 	}
+}
+
+// A connection whose sender died (a closed socket, a voice gateway that went
+// away) stops pulling for good: frames wait, the audio stops, and the room runs
+// on. The watchdog re-installs the provider, which is how a fresh pull loop
+// starts.
+func TestTheSenderIsRestartedWhenTheConnectionStopsPulling(t *testing.T) {
+	conn := &fakeConn{}
+	sender := NewConnSender(conn, 8, nil, nil)
+	sender.watchEvery = 50 * time.Millisecond
+	sender.giveUpAfter = 100
+
+	for i := range 4 {
+		if err := sender.Send([]byte{byte(i)}); err != nil {
+			t.Fatalf("Send %d: %v", i, err)
+		}
+	}
+	first := conn.provider
+	if _, err := first.ProvideOpusFrame(); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+
+	// The connection stops pulling with frames still queued.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn.provider != first {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if conn.provider == first {
+		t.Fatal("the sender was never restarted")
+	}
+	// And the fresh install serves the frames that were waiting.
+	if _, err := conn.provider.ProvideOpusFrame(); err != nil {
+		t.Fatalf("pull after restart: %v", err)
+	}
+}
+
+// A connection that will not take audio even after a restart must not leave a
+// sink waiting on it forever.
+func TestASenderThatNeverTakesAudioGivesUp(t *testing.T) {
+	conn := &fakeConn{}
+	sender := NewConnSender(conn, 8, nil, nil)
+	sender.watchEvery = 20 * time.Millisecond
+	sender.giveUpAfter = 2
+
+	for i := range 4 {
+		if err := sender.Send([]byte{byte(i)}); err != nil {
+			t.Fatalf("Send %d: %v", i, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := sender.Send([]byte{0xFF}); err != nil {
+			return // it gave up, as it should
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("a connection that never pulls kept accepting frames")
 }
 
 func TestConnSenderClosesCleanly(t *testing.T) {
