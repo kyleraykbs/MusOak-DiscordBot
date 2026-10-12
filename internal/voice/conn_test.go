@@ -42,7 +42,7 @@ var _ voice.Conn = (*fakeConn)(nil)
 
 func TestConnSenderHandsFramesToTheConn(t *testing.T) {
 	conn := &fakeConn{}
-	sender := NewConnSender(conn)
+	sender := NewConnSender(conn, 4)
 	if conn.provider == nil {
 		t.Fatal("the connection was not given a frame provider")
 	}
@@ -66,7 +66,7 @@ func TestConnSenderHandsFramesToTheConn(t *testing.T) {
 
 func TestConnSenderDrainDropsQueuedFrames(t *testing.T) {
 	conn := &fakeConn{}
-	sender := NewConnSender(conn)
+	sender := NewConnSender(conn, 4)
 	for i := range 4 {
 		if err := sender.Send([]byte{byte(i)}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
@@ -78,9 +78,32 @@ func TestConnSenderDrainDropsQueuedFrames(t *testing.T) {
 	}
 }
 
+func TestConnSenderCountsWhatLeftForTheWire(t *testing.T) {
+	conn := &fakeConn{}
+	sender := NewConnSender(conn, 8)
+	for i := range 5 {
+		if err := sender.Send([]byte{byte(i)}); err != nil {
+			t.Fatalf("Send %d: %v", i, err)
+		}
+	}
+	// Pushed is not played: the buffer ahead of the wire is not audible yet,
+	// and a sink that counted it would report position early.
+	if got := sender.PlayedFrames(); got != 0 {
+		t.Fatalf("played before any pull = %d, want 0", got)
+	}
+	for i := range 3 {
+		if _, err := conn.provider.ProvideOpusFrame(); err != nil {
+			t.Fatalf("pull %d: %v", i, err)
+		}
+	}
+	if got := sender.PlayedFrames(); got != 3 {
+		t.Fatalf("played after three pulls = %d, want 3", got)
+	}
+}
+
 func TestConnSenderClosesCleanly(t *testing.T) {
 	conn := &fakeConn{}
-	sender := NewConnSender(conn)
+	sender := NewConnSender(conn, 4)
 
 	// The connection's sender closes the provider when the connection goes
 	// away; the pull then reports EOF so the sender's loop can let go.

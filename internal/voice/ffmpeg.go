@@ -5,21 +5,45 @@ import (
 	"strconv"
 )
 
-// frameMs is the packet duration ffmpeg is told to produce. Discord's voice
+// FrameMs is the packet duration ffmpeg is told to produce, and the unit a
+// buffer is counted in. Discord's voice
 // pipeline expects roughly this per packet, and a fixed size means the sink
 // can count position in packets without parsing opus headers.
 const frameMs = 20
 
+// FrameMs is frameMs for callers that size a buffer in milliseconds.
+const FrameMs = frameMs
+
+// defaultBitrateKbps is what the encoder targets when the channel says
+// nothing: comfortably above the 64kbps a plain channel allows, well inside
+// what a boosted one does.
+const defaultBitrateKbps = 192
+
+// maxVoiceBitrateKbps is Discord's ceiling for a voice channel.
+const maxVoiceBitrateKbps = 256
+
+// MaxVoiceBitrateKbps is maxVoiceBitrateKbps for callers that clamp.
+const MaxVoiceBitrateKbps = maxVoiceBitrateKbps
+
 // ffmpegArgs builds the command that turns a cached file into 20ms Ogg/Opus
 // frames on stdout: 48kHz stereo is exactly what Discord's voice servers take,
 // and re-encoding through libopus guarantees the frame size whatever the
-// source was.
-func ffmpegArgs(path string, positionMs int64) []string {
+// source was. The bitrate is the channel's own — Discord caps a voice channel
+// there, so matching it is both the loudest and the highest quality the
+// channel can carry; the music application is what libopus wants for songs
+// rather than speech.
+func ffmpegArgs(path string, positionMs int64, bitrateKbps int) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
 	}
 	if positionMs > 0 {
 		args = append(args, "-ss", formatSeconds(positionMs))
+	}
+	if bitrateKbps <= 0 {
+		bitrateKbps = defaultBitrateKbps
+	}
+	if bitrateKbps > maxVoiceBitrateKbps {
+		bitrateKbps = maxVoiceBitrateKbps
 	}
 	return append(args,
 		"-i", path,
@@ -27,7 +51,8 @@ func ffmpegArgs(path string, positionMs int64) []string {
 		"-ar", "48000",
 		"-ac", "2",
 		"-c:a", "libopus",
-		"-b:a", "192k",
+		"-application", "audio",
+		"-b:a", strconv.Itoa(bitrateKbps)+"k",
 		"-frame_duration", strconv.Itoa(frameMs),
 		"-f", "opus",
 		"pipe:1",

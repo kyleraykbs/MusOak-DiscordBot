@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	disgovoice "github.com/disgoorg/disgo/voice"
 
 	"codeberg.org/kyleraykbs/musoak/pkg/client"
@@ -170,7 +171,18 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 		return err
 	}
 
-	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn), b.logger)
+	bufferFrames := b.cfg.AudioBufferMs / voice.FrameMs
+	if bufferFrames < 3 {
+		bufferFrames = 3
+	}
+	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames), b.logger)
+	bitrate := b.cfg.AudioBitrateKbps
+	if bitrate <= 0 {
+		bitrate = channelBitrateKbps(b.session, channelID)
+	}
+	sink.SetBitrate(bitrate)
+	b.logger.Info("bot: playing into the channel",
+		"channel", channelID, "bitrate_kbps", bitrate, "buffer_ms", bufferFrames*voice.FrameMs)
 	participant := client.NewParticipant(room, b.cache, sink, b.logger)
 	tracker := newPlayTracker(b.store, roomID, b.logger)
 	participant.OnEvent = tracker.event
@@ -192,28 +204,17 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 			if errors.Is(err, context.Canceled) {
 				return // replaced or stopped
 			}
-			if err == nil {
-				// The room closed while we were in it: give the voice channel
-				// back and forget the mapping so the next command opens a
-				// fresh room.
-				b.logger.Info("bot: the room closed", "room", roomID)
-				g.mu.Lock()
-				if g.run == run {
-					g.run = nil
-					g.voiceChannel = ""
-				}
-				g.mu.Unlock()
-				b.voice.close(context.Background(), guildID)
-				if err := b.store.ForgetRoom(context.Background(), guildID, channelID); err != nil {
-					b.logger.Warn("bot: forgetting a closed room", "error", err)
-				}
+			if errors.Is(err, client.ErrRoomClosed) {
+				b.leaveClosedRoom(g, run, guildID, channelID, roomID)
 				return
 			}
-			// The follower can lose the room's event socket — a server
-			// restart, a proxy that hangs up — and that must not be the end of
-			// the music: the room is still there and this member is still in
-			// it, so follow it again, backing off as failures repeat.
-			b.logger.Warn("bot: the room follower stopped; retrying",
+			// A dropped socket is not a closed room: the room is still there
+			// and this member was in it (the server's grace may have taken
+			// them out while the socket was away), so re-join and follow it
+			// again, backing off as failures repeat. Leaving the voice channel
+			// here is what a shuffle looked like: one lost socket and the bot
+			// walked out of a room that never went anywhere.
+			b.logger.Warn("bot: the room follower stopped; rejoining",
 				"room", roomID, "error", err, "in", backoff)
 			select {
 			case <-ctx.Done():
@@ -223,9 +224,64 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 			if backoff < participantRetryCeiling {
 				backoff *= 2
 			}
+			rejoinErr := b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
+				_, err := c.JoinRoom(ctx, roomID)
+				return err
+			})
+			if client.IsNotFound(rejoinErr) {
+				// The room really did close while we were away.
+				b.leaveClosedRoom(g, run, guildID, channelID, roomID)
+				return
+			}
+			if rejoinErr != nil {
+				b.logger.Warn("bot: could not re-join the room", "room", roomID, "error", rejoinErr)
+			}
 		}
 	}()
 	return nil
+}
+
+// channelBitrateKbps is what a voice channel allows, in kbps: Discord caps the
+// encoder there, so it is both the ceiling and the target. Zero when the
+// channel is not known yet, which the encoder reads as its default.
+func channelBitrateKbps(session *discordgo.Session, channelID string) int {
+	channel, err := session.State.Channel(channelID)
+	if err != nil || channel == nil {
+		return 0
+	}
+	return voiceBitrateKbps(channel.Bitrate)
+}
+
+// voiceBitrateKbps clamps a channel bitrate (bits per second) into what Discord
+// accepts for voice: 8kbps at the floor, 256kbps at the ceiling.
+func voiceBitrateKbps(bitsPerSecond int) int {
+	if bitsPerSecond <= 0 {
+		return 0
+	}
+	kbps := bitsPerSecond / 1000
+	if kbps < 8 {
+		return 8
+	}
+	if kbps > voice.MaxVoiceBitrateKbps {
+		return voice.MaxVoiceBitrateKbps
+	}
+	return kbps
+}
+
+// leaveClosedRoom gives the voice channel back and forgets the mapping, so the
+// next command opens a fresh room.
+func (b *Bot) leaveClosedRoom(g *guildState, run *participantRun, guildID, channelID, roomID string) {
+	b.logger.Info("bot: the room closed", "room", roomID)
+	g.mu.Lock()
+	if g.run == run {
+		g.run = nil
+		g.voiceChannel = ""
+	}
+	g.mu.Unlock()
+	b.voice.close(context.Background(), guildID)
+	if err := b.store.ForgetRoom(context.Background(), guildID, channelID); err != nil {
+		b.logger.Warn("bot: forgetting a closed room", "error", err)
+	}
 }
 
 // How long a lost room follower waits before trying again, and how far the

@@ -100,8 +100,29 @@ func sinkFor(t *testing.T, script string) (*Sink, *fakeSender) {
 	return NewSink(script, sender, nil), sender
 }
 
+func TestFFmpegArgsBitrateFollowsTheChannel(t *testing.T) {
+	// The channel's own bitrate is what Discord caps the audio at, so it is
+	// what the encoder targets; zero falls back to the default, and Discord's
+	// ceiling is never exceeded.
+	cases := []struct {
+		kbps int
+		want string
+	}{
+		{0, "-b:a 192k"},
+		{128, "-b:a 128k"},
+		{256, "-b:a 256k"},
+		{512, "-b:a 256k"},
+	}
+	for _, tc := range cases {
+		args := ffmpegArgs("/cache/x.opus", 0, tc.kbps)
+		if joined := strings.Join(args, " "); !strings.Contains(joined, tc.want) {
+			t.Errorf("bitrate %d: %s, want %s", tc.kbps, joined, tc.want)
+		}
+	}
+}
+
 func TestFFmpegArgsSeekAndFormat(t *testing.T) {
-	args := ffmpegArgs("/cache/x.opus", 91_500)
+	args := ffmpegArgs("/cache/x.opus", 91_500, 0)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-ss 91.500") {
 		t.Errorf("no input seek at the position: %s", joined)
@@ -111,7 +132,7 @@ func TestFFmpegArgsSeekAndFormat(t *testing.T) {
 	if ss < 0 || in < 0 || ss > in {
 		t.Errorf("-ss must come before -i: %s", joined)
 	}
-	for _, want := range []string{"-ar 48000", "-ac 2", "-frame_duration 20", "-f opus", "pipe:1"} {
+	for _, want := range []string{"-ar 48000", "-ac 2", "-frame_duration 20", "-f opus", "pipe:1", "-application audio"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
 		}
@@ -120,7 +141,7 @@ func TestFFmpegArgsSeekAndFormat(t *testing.T) {
 		// Position zero is not worth a seek flag.
 		t.Errorf("zero position should not add -ss: %s", joined)
 	}
-	if args := ffmpegArgs("p", 0); indexOf(args, "-ss") != -1 {
+	if args := ffmpegArgs("p", 0, 0); indexOf(args, "-ss") != -1 {
 		t.Errorf("position 0 produced a seek: %v", args)
 	}
 }

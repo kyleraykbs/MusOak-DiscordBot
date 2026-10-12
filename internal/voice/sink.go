@@ -20,6 +20,12 @@ import (
 	"codeberg.org/kyleraykbs/musoak/pkg/client"
 )
 
+// PlayedReporter is a Sender that knows how many frames have actually left for
+// the wire; the sink prefers it for position.
+type PlayedReporter interface {
+	PlayedFrames() int64
+}
+
 // Sender is the voice connection as the sink needs it: hand a packet over,
 // say whether this member is speaking. DiscordSender adapts discordgo's
 // VoiceConnection; tests use a fake.
@@ -55,8 +61,11 @@ type Sink struct {
 	sent    int64 // packets pushed in the current run
 	seekReq bool
 	seekTo  int64
-	proc    *runProc
-	cancel  context.CancelFunc // kills the current ffmpeg
+	// bitrateKbps is what the encoder targets: the voice channel's own, which
+	// is where Discord caps it. Zero keeps the default.
+	bitrateKbps int
+	proc        *runProc
+	cancel      context.CancelFunc // kills the current ffmpeg
 }
 
 // NewSink builds a sink that launches bin as ffmpeg ("ffmpeg" when empty).
@@ -137,6 +146,15 @@ func (s *Sink) Play(ctx context.Context, track client.SinkTrack) error {
 	return err
 }
 
+// SetBitrate tells the sink how many kbps the voice channel allows, which is
+// the ceiling Discord enforces. Zero keeps the default; the value applies to
+// the next track.
+func (s *Sink) SetBitrate(kbps int) {
+	s.mu.Lock()
+	s.bitrateKbps = kbps
+	s.mu.Unlock()
+}
+
 // Stop abandons whatever is playing: no more packets, not speaking. The Play
 // loop is cancelled and reaped; if it does not leave within three seconds the
 // caller goes on without it (it is already unreachable).
@@ -215,11 +233,19 @@ func (s *Sink) Seek(ctx context.Context, positionMs int64) error {
 }
 
 // PositionMs is where the audible audio is: the run's start plus the frames
-// pushed out. It freezes during a pause because no frames move.
+// that have left for the wire. A sender that can say how many those are is
+// asked, because a buffer ahead of the wire is not audible yet — counting what
+// was pushed would report the buffer as played and pull the room's drift
+// correction backwards. A sender that cannot say falls back to what it was
+// given, which is exact only while the buffer is empty.
 func (s *Sink) PositionMs(ctx context.Context) (int64, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.posMs + s.sent*frameMs, nil
+	posMs, sent := s.posMs, s.sent
+	s.mu.Unlock()
+	if reporter, ok := s.sender.(PlayedReporter); ok {
+		return posMs + reporter.PlayedFrames()*frameMs, nil
+	}
+	return posMs + sent*frameMs, nil
 }
 
 // stream is the Play loop. Invariants worth keeping in mind while reading:
@@ -296,25 +322,21 @@ func (s *Sink) abort() {
 	_ = s.sender.Speaking(false)
 }
 
-// send hands a packet over without wedging forever if the connection died.
+// send hands a packet over. The sender blocks until it has room, which is the
+// backpressure that keeps the buffer honest, and unblocks on its own if the
+// connection goes away — so this needs no goroutine per frame.
 func (s *Sink) send(ctx context.Context, pkt []byte) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- s.sender.Send(pkt)
-	}()
-	select {
-	case err := <-done:
+	if err := ctx.Err(); err != nil {
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+	return s.sender.Send(pkt)
 }
 
 // launch starts ffmpeg at the run's current position, replacing any run that
 // is still there.
 func (s *Sink) launch(ctx context.Context) error {
 	s.mu.Lock()
-	path, pos, prev := s.path, s.posMs, s.proc
+	path, pos, bitrate, prev := s.path, s.posMs, s.bitrateKbps, s.proc
 	s.mu.Unlock()
 	if prev != nil {
 		prev.kill()
@@ -324,7 +346,7 @@ func (s *Sink) launch(ctx context.Context) error {
 	if resolved, err := exec.LookPath(bin); err == nil {
 		bin = resolved
 	}
-	args := ffmpegArgs(path, pos)
+	args := ffmpegArgs(path, pos, bitrate)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// Own process group: a cancelled ctx (or a seek's kill) takes every
 	// process the launch made, so the pipe closes and the reader wakes.

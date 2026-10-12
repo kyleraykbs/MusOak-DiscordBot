@@ -4,36 +4,49 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/disgoorg/disgo/voice"
 )
 
 // ConnSender is Sender for a disgo voice connection. Frames hand off through a
-// small queue that the connection's own audio sender pulls from once every
-// 20ms; the connection wraps them in DAVE and transport encryption on the way
-// out, which is the part Discord's v8 voice gateway requires and discordgo's
-// own sender never did.
+// queue that the connection's own audio sender pulls from once every 20ms; the
+// connection wraps them in DAVE and transport encryption on the way out, which
+// is the part Discord's v8 voice gateway requires and discordgo's own sender
+// never did.
 //
-// The queue is the pacing: it holds a few frames, so this side stays a little
-// ahead of the wire and the connection is never flooded.
+// The queue is the buffer. It holds `bufferFrames` of audio ahead of the wire
+// so a hiccup — an ffmpeg relaunch between songs, a scheduling blip — is
+// absorbed instead of heard: the pull loop treats an empty queue as silence,
+// and enough of that is a drop.
 type ConnSender struct {
 	conn   voice.Conn
 	queue  chan []byte
 	closed chan struct{}
 	once   sync.Once
+
+	played atomic.Int64 // frames the connection has actually pulled
 }
 
 // NewConnSender attaches a frame provider to the connection and returns the
-// sender the sink pushes into.
-func NewConnSender(conn voice.Conn) *ConnSender {
+// sender the sink pushes into. bufferFrames is how much audio is kept ahead of
+// the wire; anything below a few frames is no buffer at all.
+func NewConnSender(conn voice.Conn, bufferFrames int) *ConnSender {
+	if bufferFrames < 3 {
+		bufferFrames = 3
+	}
 	s := &ConnSender{
 		conn:   conn,
-		queue:  make(chan []byte, 4),
+		queue:  make(chan []byte, bufferFrames),
 		closed: make(chan struct{}),
 	}
 	conn.SetOpusFrameProvider(s)
 	return s
 }
+
+// PlayedFrames is how many frames have left the queue towards the wire, which
+// is where the audio is — the position a sink should report.
+func (s *ConnSender) PlayedFrames() int64 { return s.played.Load() }
 
 // Send queues one opus packet for the connection's sender. The closed check
 // comes first on purpose: a select over a closed channel and a writable one
@@ -76,6 +89,7 @@ func (s *ConnSender) Drain() {
 func (s *ConnSender) ProvideOpusFrame() ([]byte, error) {
 	select {
 	case frame := <-s.queue:
+		s.played.Add(1)
 		return frame, nil
 	case <-s.closed:
 		return nil, io.EOF
@@ -91,6 +105,6 @@ func (s *ConnSender) Close() {
 }
 
 var (
-	_ Sender             = (*ConnSender)(nil)
+	_ Sender                  = (*ConnSender)(nil)
 	_ voice.OpusFrameProvider = (*ConnSender)(nil)
 )

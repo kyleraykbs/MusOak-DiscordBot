@@ -12,6 +12,10 @@ import (
 	"path/filepath"
 )
 
+// DefaultAudioBufferMs is how much audio is queued ahead of the voice
+// connection when the config does not say: 25 frames of 20ms.
+const DefaultAudioBufferMs = 500
+
 // Account is the placeholder musoak account: the room member named
 // "Discord Bot" that plays the room's mixed queue and holds every unlinked
 // user's queue items, playlists, favorites and plays.
@@ -31,9 +35,8 @@ type Config struct {
 	Token string `json:"token"`
 	// ServerURL is the musoak server this bot talks to.
 	ServerURL string `json:"serverURL"`
-	// Guilds are the Discord servers the bot serves; commands are registered
-	// guild-scoped for each, which takes effect immediately. Empty means
-	// global registration (Discord propagates it within the hour).
+	// Guilds are the Discord servers the bot serves. Empty means every server
+	// it is in, registered the moment it is invited.
 	Guilds []string `json:"guilds"`
 	// Account is the placeholder musoak account.
 	Account Account `json:"account"`
@@ -41,15 +44,26 @@ type Config struct {
 	State string `json:"state"`
 	// CacheDir is where the media cache keeps the room's songs.
 	CacheDir string `json:"cacheDir"`
+	// AudioBufferMs is how much audio the bot keeps queued ahead of the voice
+	// connection. It absorbs the small hiccups — an ffmpeg relaunch between
+	// songs, a scheduling blip — that would otherwise starve the connection's
+	// 20ms send loop and be heard as a drop. Default 500; the useful range is
+	// about 100 (snappy pauses) to 2000 (very jittery hosts).
+	AudioBufferMs int `json:"audioBufferMs,omitempty"`
+	// AudioBitrateKbps overrides the encoder's bitrate. Zero follows the voice
+	// channel's own setting, which is what Discord caps the audio at — a
+	// boosted channel is where a higher number has any effect.
+	AudioBitrateKbps int `json:"audioBitrateKbps,omitempty"`
 }
 
 // Default fills the paths that have a conventional home, mirroring musoak's
 // own config: XDG directories, falling back to the home directory.
 func Default() *Config {
 	return &Config{
-		Account:  Account{DisplayName: "Discord Bot"},
-		State:    filepath.Join(dataDir(), "musoak-discord-bot", "state.db"),
-		CacheDir: filepath.Join(cacheDir(), "musoak-discord-bot"),
+		Account:       Account{DisplayName: "Discord Bot"},
+		AudioBufferMs: DefaultAudioBufferMs,
+		State:         filepath.Join(dataDir(), "musoak-discord-bot", "state.db"),
+		CacheDir:      filepath.Join(cacheDir(), "musoak-discord-bot"),
 	}
 }
 
@@ -116,6 +130,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.CacheDir == "" {
 		cfg.CacheDir = Default().CacheDir
+	}
+	if cfg.AudioBufferMs == 0 {
+		cfg.AudioBufferMs = DefaultAudioBufferMs
 	}
 	if cfg.Account.DisplayName == "" {
 		// An explicitly blanked name means the default, JSON cannot tell
