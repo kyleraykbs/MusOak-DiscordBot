@@ -248,7 +248,7 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 	if bufferFrames < 3 {
 		bufferFrames = 3
 	}
-	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames, b.logger), b.logger)
+	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames, b.logger, b.voice.shouldHoldFrames), b.logger)
 	bitrate := b.cfg.AudioBitrateKbps
 	if bitrate <= 0 {
 		bitrate = channelBitrateKbps(b.session, channelID)

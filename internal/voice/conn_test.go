@@ -42,7 +42,7 @@ var _ voice.Conn = (*fakeConn)(nil)
 
 func TestConnSenderHandsFramesToTheConn(t *testing.T) {
 	conn := &fakeConn{}
-	sender := NewConnSender(conn, 4, nil)
+	sender := NewConnSender(conn, 4, nil, nil)
 	if conn.provider == nil {
 		t.Fatal("the connection was not given a frame provider")
 	}
@@ -66,7 +66,7 @@ func TestConnSenderHandsFramesToTheConn(t *testing.T) {
 
 func TestConnSenderDrainDropsQueuedFrames(t *testing.T) {
 	conn := &fakeConn{}
-	sender := NewConnSender(conn, 4, nil)
+	sender := NewConnSender(conn, 4, nil, nil)
 	for i := range 4 {
 		if err := sender.Send([]byte{byte(i)}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
@@ -80,7 +80,7 @@ func TestConnSenderDrainDropsQueuedFrames(t *testing.T) {
 
 func TestConnSenderCountsWhatLeftForTheWire(t *testing.T) {
 	conn := &fakeConn{}
-	sender := NewConnSender(conn, 8, nil)
+	sender := NewConnSender(conn, 8, nil, nil)
 	for i := range 5 {
 		if err := sender.Send([]byte{byte(i)}); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
@@ -101,9 +101,43 @@ func TestConnSenderCountsWhatLeftForTheWire(t *testing.T) {
 	}
 }
 
+// While the DAVE group changes, a frame sent now is encrypted under an epoch
+// the listeners have left: it is a dropout either way, so the frames wait in
+// the buffer instead of being thrown away.
+func TestFramesWaitOutADaveEpochChange(t *testing.T) {
+	conn := &fakeConn{}
+	holding := true
+	sender := NewConnSender(conn, 8, nil, func() bool { return holding })
+
+	for i := range 4 {
+		if err := sender.Send([]byte{byte(i)}); err != nil {
+			t.Fatalf("Send %d: %v", i, err)
+		}
+	}
+	// Mid-change: silence goes out, and nothing is consumed.
+	if got, err := conn.provider.ProvideOpusFrame(); err != nil || len(got) != 0 {
+		t.Fatalf("pull while holding = %x (%v), want silence", got, err)
+	}
+	if played := sender.PlayedFrames(); played != 0 {
+		t.Fatalf("played while holding = %d, want 0", played)
+	}
+
+	// The epoch settles: every frame is still there, in order.
+	holding = false
+	for i := range 4 {
+		got, err := conn.provider.ProvideOpusFrame()
+		if err != nil || len(got) != 1 || got[0] != byte(i) {
+			t.Fatalf("pull %d after the change = %x (%v)", i, got, err)
+		}
+	}
+	if played := sender.PlayedFrames(); played != 4 {
+		t.Fatalf("played after the change = %d, want 4", played)
+	}
+}
+
 func TestConnSenderClosesCleanly(t *testing.T) {
 	conn := &fakeConn{}
-	sender := NewConnSender(conn, 4, nil)
+	sender := NewConnSender(conn, 4, nil, nil)
 
 	// The connection's sender closes the provider when the connection goes
 	// away; the pull then reports EOF so the sender's loop can let go.

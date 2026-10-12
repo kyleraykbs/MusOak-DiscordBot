@@ -14,10 +14,10 @@ import (
 
 // DefaultAudioBufferMs is how much audio is queued ahead of the voice
 // connection when the config does not say: 25 frames of 20ms.
-const DefaultAudioBufferMs = 500
+const DefaultAudioBufferMs = 1000
 
 // DefaultVolume is what the bot plays at unless the config says otherwise.
-const DefaultVolume = 0.75
+const DefaultVolume = 0.5
 
 // Account is the placeholder musoak account: the room member named
 // "Discord Bot" that plays the room's mixed queue and holds every unlinked

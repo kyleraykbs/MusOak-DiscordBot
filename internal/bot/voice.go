@@ -28,6 +28,10 @@ type voiceHub struct {
 
 	mu      sync.Mutex
 	manager voice.Manager
+	// dave is dave-go's own session, captured when the connection makes it:
+	// it knows whether the group is mid-change, which is when frames have to
+	// wait rather than go out under an epoch nobody is listening on yet.
+	dave *davesession.Session
 }
 
 func newVoiceHub(session *discordgo.Session, logger *slog.Logger) *voiceHub {
@@ -46,9 +50,29 @@ func (h *voiceHub) start(userID string) error {
 	defer h.mu.Unlock()
 	h.manager = voice.NewManager(h.stateUpdate, id,
 		voice.WithLogger(h.logger),
-		voice.WithDaveSessionCreateFunc(davesession.CreateFunc()),
+		voice.WithDaveSessionCreateFunc(davesession.CreateFunc(
+			davesession.WithSessionHook(func(session *davesession.Session) {
+				h.mu.Lock()
+				h.dave = session
+				h.mu.Unlock()
+				h.logger.Debug("voice: dave session ready")
+			}),
+		)),
 	)
 	return nil
+}
+
+// shouldHoldFrames is what the sink asks before handing a frame over: true
+// while the DAVE group is changing, so the frame waits in the buffer instead
+// of being sent under an epoch the listeners have left.
+func (h *voiceHub) shouldHoldFrames() bool {
+	h.mu.Lock()
+	session := h.dave
+	h.mu.Unlock()
+	if session == nil {
+		return false
+	}
+	return session.ShouldHoldFrames()
 }
 
 // stateUpdate is what a voice connection asks for: send this voice state to

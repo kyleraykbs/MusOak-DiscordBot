@@ -26,6 +26,14 @@ type ConnSender struct {
 	closed chan struct{}
 	once   sync.Once
 	logger *slog.Logger
+	// hold reports whether the DAVE group is mid-change, in which case frames
+	// are kept in the queue rather than sent: a listener that has moved to the
+	// new epoch cannot decrypt the old one, so sending them is a dropout with
+	// extra steps. Nil means never hold.
+	hold func() bool
+	// holding is whether the last pull held, so the transition is logged once.
+	holding    bool
+	heldFrames int64
 
 	played atomic.Int64 // frames the connection has actually pulled
 	// dry counts the pulls that found nothing queued since the last one that
@@ -40,7 +48,7 @@ type ConnSender struct {
 // NewConnSender attaches a frame provider to the connection and returns the
 // sender the sink pushes into. bufferFrames is how much audio is kept ahead of
 // the wire; anything below a few frames is no buffer at all.
-func NewConnSender(conn voice.Conn, bufferFrames int, logger *slog.Logger) *ConnSender {
+func NewConnSender(conn voice.Conn, bufferFrames int, logger *slog.Logger, hold func() bool) *ConnSender {
 	if bufferFrames < 3 {
 		bufferFrames = 3
 	}
@@ -52,6 +60,7 @@ func NewConnSender(conn voice.Conn, bufferFrames int, logger *slog.Logger) *Conn
 		queue:  make(chan []byte, bufferFrames),
 		closed: make(chan struct{}),
 		logger: logger,
+		hold:   hold,
 	}
 	conn.SetOpusFrameProvider(s)
 	return s
@@ -100,6 +109,19 @@ func (s *ConnSender) Drain() {
 // few frames of silence and then stops speaking — and EOF once the sender is
 // closed, which is how the pull loop is told to let go.
 func (s *ConnSender) ProvideOpusFrame() ([]byte, error) {
+	// The queue is not consumed while the DAVE group changes: what is in it
+	// stays in it, and the epoch settles in a few frames. Silence goes out
+	// instead, which is what the change sounds like either way.
+	if s.hold != nil && s.hold() {
+		s.noteHeld()
+		return nil, nil
+	}
+	if s.holding {
+		s.holding = false
+		s.logger.Info("voice: frames flowing again after a DAVE epoch change",
+			"held_frames", s.heldFrames)
+		s.heldFrames = 0
+	}
 	select {
 	case frame := <-s.queue:
 		s.played.Add(1)
@@ -131,6 +153,17 @@ func (s *ConnSender) ProvideOpusFrame() ([]byte, error) {
 // dryFramesWorthSaying is how long the buffer has to be empty before it is a
 // gap in the audio rather than the space between two frames.
 const dryFramesWorthSaying = 3
+
+// noteHeld counts a frame kept back for a DAVE epoch change, saying so once per
+// change.
+func (s *ConnSender) noteHeld() {
+	s.heldFrames++
+	if s.holding {
+		return
+	}
+	s.holding = true
+	s.logger.Info("voice: holding frames while the DAVE epoch changes")
+}
 
 // Close ends the pull. The connection's audio sender calls it when the
 // connection goes away.
