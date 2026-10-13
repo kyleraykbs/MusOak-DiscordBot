@@ -42,11 +42,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1791851056,
-        "narHash": "sha256-/Lx+e10QVgO3kmUjtfqq8jh4fmQ2INVjWFMJqZEjHe0=",
+        "lastModified": 1791852334,
+        "narHash": "sha256-rEa+aHWrLW81qDYMcEwO55V/Mbzz1pQbuCUS1Jq7cOQ=",
         "owner": "kyleraykbs",
         "repo": "MusOak",
-        "rev": "ee6acefe5700306c19ea556ebf20c4e9b9271cf3",
+        "rev": "7b3c2d2dee0aecd9a5975489dafc033adbcd39bc",
         "type": "github"
       },
       "original": {
