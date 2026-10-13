@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"codeberg.org/kyleraykbs/musoak/pkg/client"
+
+	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
 )
 
 func roomWith(id, name string, at int64, members ...client.RoomMember) client.Room {
@@ -49,5 +51,31 @@ func TestPickRoomByNamePrefersTheBotsOwnRoom(t *testing.T) {
 	}
 	if _, ok := pickRoomByName(rooms, "", "placeholder"); ok {
 		t.Error("picked a room for an unnamed channel")
+	}
+}
+
+func TestPlanRestorePutsBackWhatTheRoomLost(t *testing.T) {
+	rows := []state.Queued{
+		{RoomID: "r1", ItemID: "i1", DiscordID: "d1", TrackID: "t1"},
+		{RoomID: "r1", ItemID: "i2", DiscordID: "d2", TrackID: "t2"},
+		{RoomID: "r1", ItemID: "i3", DiscordID: "d1", TrackID: "t3"},
+	}
+	// t2 is still queued (the room kept it); t1 and t3 went with the
+	// membership, so they go back — in order, under the same people.
+	missing, forget := planRestore(rows, map[string]bool{"t2": true})
+	if len(missing) != 2 || missing[0].TrackID != "t1" || missing[1].TrackID != "t3" {
+		t.Fatalf("missing = %+v, want t1 then t3", missing)
+	}
+	if len(forget) != 2 || forget[0] != "i1" || forget[1] != "i3" {
+		t.Fatalf("forget = %v, want the gone item ids", forget)
+	}
+	if missing[0].DiscordID != "d1" || missing[1].DiscordID != "d1" {
+		t.Errorf("attribution lost: %+v", missing)
+	}
+
+	// Nothing lost: nothing to do, and no rows are consumed.
+	missing, forget = planRestore(rows, map[string]bool{"t1": true, "t2": true, "t3": true})
+	if len(missing) != 0 || len(forget) != 0 {
+		t.Fatalf("missing = %+v forget = %v, want nothing", missing, forget)
 	}
 }

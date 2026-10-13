@@ -243,6 +243,27 @@ func TestRoomsListsEveryMapping(t *testing.T) {
 	}
 }
 
+func TestQueuedForRoomKeepsTheOrder(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	for _, q := range []Queued{
+		{RoomID: "r1", ItemID: "i1", DiscordID: "d1", TrackID: "t1"},
+		{RoomID: "r1", ItemID: "i2", DiscordID: "d2", TrackID: "t2"},
+		{RoomID: "r2", ItemID: "i3", DiscordID: "d1", TrackID: "t3"},
+	} {
+		if err := s.RememberQueued(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.QueuedForRoom(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].TrackID != "t1" || rows[1].TrackID != "t2" {
+		t.Fatalf("rows = %+v, want t1 then t2", rows)
+	}
+}
+
 func TestRoomMappingRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)

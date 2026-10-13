@@ -295,6 +295,19 @@ WHERE discord_id = ? ORDER BY rowid`, discordID)
 	return scanQueued(rows)
 }
 
+// QueuedForRoom lists a room's attributed items in the order they were
+// queued, which is what putting them back after a drop needs.
+func (s *Store) QueuedForRoom(ctx context.Context, roomID string) ([]Queued, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT room_id, item_id, discord_id, track_id FROM queued
+WHERE room_id = ? ORDER BY rowid`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanQueued(rows)
+}
+
 // QueuedInRoom maps a room's placeholder queue items to their owners, so a
 // song starting can be attributed to whoever queued it.
 func (s *Store) QueuedInRoom(ctx context.Context, roomID string) (map[string]string, error) {

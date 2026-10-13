@@ -210,6 +210,7 @@ func (b *Bot) joinRoomAsPlaceholder(ctx context.Context, guildID, channelID, roo
 		return err
 	})
 	if err == nil {
+		b.restoreDiscordQueue(ctx, room)
 		return room, nil
 	}
 	if !client.IsNotFound(err) {
@@ -233,6 +234,86 @@ func (b *Bot) joinRoomAsPlaceholder(ctx context.Context, guildID, channelID, roo
 		return nil, fmt.Errorf("joining the new room %s: %w", fresh, err)
 	}
 	return room, nil
+}
+
+// restoreDiscordQueue puts back the songs somebody queued through Discord when
+// the room no longer holds them.
+//
+// A member who leaves takes their queue with them, and the server removes a
+// member whose event socket was away past its grace - so a blink costs the
+// placeholder everything queued from Discord, which is a queue nobody can
+// retype. The bot remembers what it queued and for whom, so rejoining puts it
+// back in the same order, under the same Discord user.
+func (b *Bot) restoreDiscordQueue(ctx context.Context, room *client.RoomClient) {
+	rows, err := b.store.QueuedForRoom(ctx, room.RoomID)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	snapshot, err := room.Snapshot(ctx)
+	if err != nil {
+		return
+	}
+	present := map[string]bool{}
+	for _, item := range snapshot.Queues[room.MemberID] {
+		present[item.TrackID] = true
+	}
+	missing, forget := planRestore(rows, present)
+	if len(missing) == 0 {
+		if len(forget) > 0 {
+			_ = b.store.ForgetQueued(ctx, room.RoomID, forget...)
+		}
+		return
+	}
+
+	trackIDs := make([]string, 0, len(missing))
+	for _, row := range missing {
+		trackIDs = append(trackIDs, row.TrackID)
+	}
+	after, err := room.QueueMany(ctx, trackIDs)
+	if err != nil {
+		b.logger.Warn("bot: could not put the Discord queue back", "room", room.RoomID, "error", err)
+		return
+	}
+	// The old items are gone with the membership; the new ones are these.
+	if err := b.store.ForgetQueued(ctx, room.RoomID, forget...); err != nil {
+		b.logger.Warn("bot: forgetting restored items", "error", err)
+	}
+	queued := after.Queues[room.MemberID]
+	byTrack := map[string][]client.QueueItem{}
+	for _, item := range queued {
+		byTrack[item.TrackID] = append(byTrack[item.TrackID], item)
+	}
+	restored := 0
+	for _, row := range missing {
+		items := byTrack[row.TrackID]
+		if len(items) == 0 {
+			continue
+		}
+		item := items[0]
+		byTrack[row.TrackID] = items[1:]
+		if err := b.store.RememberQueued(ctx, state.Queued{
+			RoomID: room.RoomID, ItemID: item.ID, DiscordID: row.DiscordID, TrackID: item.TrackID,
+		}); err != nil {
+			b.logger.Warn("bot: re-attributing a restored song", "error", err)
+		}
+		restored++
+	}
+	b.logger.Info("bot: put the Discord queue back after a drop",
+		"room", room.RoomID, "songs", restored)
+}
+
+// planRestore decides what a re-join has to put back: the attributed songs the
+// room no longer holds (they went with the membership) and the attribution
+// rows whose items are gone. Pure, so the decision is testable on its own.
+func planRestore(rows []state.Queued, present map[string]bool) (missing []state.Queued, forget []string) {
+	for _, row := range rows {
+		if present[row.TrackID] {
+			continue // still queued: the room kept it
+		}
+		missing = append(missing, row)
+		forget = append(forget, row.ItemID)
+	}
+	return missing, forget
 }
 
 // startParticipant attaches a fresh participant — the placeholder's
@@ -552,6 +633,11 @@ func (t *playTracker) recordLocked(now time.Time) {
 	}
 	if err := t.store.RecordPlay(context.Background(), song.discordID, song.trackID, ms, now.UnixMilli()); err != nil {
 		t.logger.Warn("tracker: record play", "error", err)
+	}
+	// The song has been heard, so it is not something a re-join should put
+	// back into the queue.
+	if err := t.store.ForgetQueued(context.Background(), t.roomID, song.itemID); err != nil {
+		t.logger.Warn("tracker: forget a played queue item", "error", err)
 	}
 }
 
