@@ -389,9 +389,14 @@ const lagReportEvery = 10 * time.Second
 
 // How long a lost room follower waits before trying again, and how far the
 // wait grows when failures repeat.
+//
+// The floor is short on purpose: the server's socket grace is ten seconds, so
+// a follower that comes back inside it never leaves the room at all. A ten
+// second first wait meant the member was removed before the retry, which is
+// the bot dropping out of the listening board and hopping back in later.
 const (
-	participantRetryFloor   = 10 * time.Second
-	participantRetryCeiling = 2 * time.Minute
+	participantRetryFloor   = time.Second
+	participantRetryCeiling = 30 * time.Second
 )
 
 // leaveVoice stops the participant, disconnects from the guild's voice and
