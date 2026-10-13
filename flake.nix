@@ -33,7 +33,7 @@
             pname = "musoak-discord-bot";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-0000000000000000000000000000000000000000000=";
+            vendorHash = "sha256-2sRGFYfa7ZdvFhDluFxknnr1bnph2u/fO61CB9h0IJw=";
             # Pure Go: no cgo means no C toolchain, and the Discord gateway
             # behaves the same on every platform.
             env.CGO_ENABLED = 0;
