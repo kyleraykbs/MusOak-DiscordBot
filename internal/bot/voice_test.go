@@ -60,3 +60,38 @@ func TestSnowflakeIDReadsOrZeroes(t *testing.T) {
 		t.Errorf("unreadable = %d, want zero", got)
 	}
 }
+
+// A channel with nobody to hear it is an empty one: the bot itself and other
+// bots do not count, and somebody in a different channel is not a listener.
+func TestAnEmptyChannelIsOneWithNoPeopleInIt(t *testing.T) {
+	session, err := discordgo.New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.State.User = &discordgo.User{ID: "bot"}
+	guild := &discordgo.Guild{ID: "g1", VoiceStates: []*discordgo.VoiceState{
+		{GuildID: "g1", ChannelID: "c1", UserID: "bot"},
+		{GuildID: "g1", ChannelID: "c1", UserID: "other-bot",
+			Member: &discordgo.Member{User: &discordgo.User{ID: "other-bot", Bot: true}}},
+	}}
+	if err := session.State.GuildAdd(guild); err != nil {
+		t.Fatal(err)
+	}
+	b := &Bot{session: session}
+	if b.channelHasListeners("g1", "c1") {
+		t.Error("the bot and another bot are nobody to play for")
+	}
+
+	guild.VoiceStates = append(guild.VoiceStates, &discordgo.VoiceState{
+		GuildID: "g1", ChannelID: "c1", UserID: "kyle",
+		Member: &discordgo.Member{User: &discordgo.User{ID: "kyle"}},
+	})
+	if !b.channelHasListeners("g1", "c1") {
+		t.Error("a person in the channel was not counted")
+	}
+
+	guild.VoiceStates[2].ChannelID = "c2"
+	if b.channelHasListeners("g1", "c1") {
+		t.Error("somebody in another channel counted as a listener")
+	}
+}

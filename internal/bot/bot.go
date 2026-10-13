@@ -64,6 +64,9 @@ func New(cfg *config.Config, store *state.Store, cache *client.Cache, logger *sl
 	b.voice = newVoiceHub(session, logger)
 	session.AddHandler(func(s *discordgo.Session, update *discordgo.VoiceStateUpdate) {
 		b.voice.handleState(update)
+		// Anybody's state, not just ours: a channel the bot is in that
+		// everybody left is a channel to leave.
+		b.watchVoiceState(update.GuildID)
 	})
 	session.AddHandler(func(s *discordgo.Session, update *discordgo.VoiceServerUpdate) {
 		b.voice.handleServer(update)
@@ -166,7 +169,8 @@ func (b *Bot) rejoinMappedChannels() {
 	}
 }
 
-// channelHasListeners reports whether anybody but the bot is in the channel.
+// channelHasListeners reports whether anybody is in the channel to hear it:
+// people, not other bots - a channel holding two music bots is an empty one.
 func (b *Bot) channelHasListeners(guildID, channelID string) bool {
 	if b.session.State.User == nil {
 		return false
@@ -176,9 +180,13 @@ func (b *Bot) channelHasListeners(guildID, channelID string) bool {
 		return false
 	}
 	for _, state := range guild.VoiceStates {
-		if state.ChannelID == channelID && state.UserID != b.session.State.User.ID {
-			return true
+		if state.ChannelID != channelID || state.UserID == b.session.State.User.ID {
+			continue
 		}
+		if state.Member != nil && state.Member.User != nil && state.Member.User.Bot {
+			continue
+		}
+		return true
 	}
 	return false
 }

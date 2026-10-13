@@ -24,6 +24,9 @@ type guildState struct {
 	// voiceChannel is the channel the bot's connection sits in, "" when out.
 	voiceChannel string
 	run          *participantRun
+	// emptyTimer counts down the grace before leaving a channel nobody is
+	// left in.
+	emptyTimer *time.Timer
 }
 
 // participantRun is one live participant: the room it follows and how to end it.
@@ -504,6 +507,49 @@ const (
 	participantRetryFloor   = time.Second
 	participantRetryCeiling = 30 * time.Second
 )
+
+// watchVoiceState is called for every voice state change in a guild. A channel
+// the bot is in that nobody is left in is a channel to leave - music for an
+// empty room is a bot sitting in a call on its own - and the grace covers the
+// moment between somebody moving channels and their state update landing.
+func (b *Bot) watchVoiceState(guildID string) {
+	g := b.guild(guildID)
+	g.mu.Lock()
+	channelID := g.voiceChannel
+	run := g.run
+	if channelID == "" || run == nil {
+		g.mu.Unlock()
+		return
+	}
+	if b.channelHasListeners(guildID, channelID) {
+		if g.emptyTimer != nil {
+			g.emptyTimer.Stop()
+			g.emptyTimer = nil
+		}
+		g.mu.Unlock()
+		return
+	}
+	if g.emptyTimer != nil {
+		g.mu.Unlock()
+		return // already counting down
+	}
+	g.emptyTimer = time.AfterFunc(emptyChannelGrace, func() {
+		g.mu.Lock()
+		g.emptyTimer = nil
+		channel := g.voiceChannel
+		g.mu.Unlock()
+		if channel != channelID || b.channelHasListeners(guildID, channel) {
+			return
+		}
+		b.logger.Info("bot: the voice channel emptied; leaving", "channel", channel)
+		b.leaveVoice(b.ctx, guildID)
+	})
+	g.mu.Unlock()
+}
+
+// emptyChannelGrace is how long a channel has to stay empty before the bot
+// leaves it.
+const emptyChannelGrace = 10 * time.Second
 
 // leaveVoice stops the participant, disconnects from the guild's voice and
 // leaves the room as the placeholder, so the listening board does not keep a
