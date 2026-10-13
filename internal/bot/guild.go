@@ -459,10 +459,90 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 			}
 			if rejoinErr != nil {
 				b.logger.Warn("bot: could not re-join the room", "room", roomID, "error", rejoinErr)
+			} else {
+				// The member may have been taken out while the socket was away
+				// (a longer outage, a restart, a grace that passed): whatever
+				// the room lost of this bot's queue is put back.
+				b.restoreQueued(ctx, roomID)
 			}
 		}
 	}()
 	return nil
+}
+
+// missingQueued is the rows the room no longer holds, in the order they were
+// queued: what a leave cost, and what has to be put back.
+func missingQueued(rows []state.Queued, live map[string]string) []state.Queued {
+	missing := make([]state.Queued, 0, len(rows))
+	for _, row := range rows {
+		if _, held := live[row.ItemID]; held {
+			continue
+		}
+		missing = append(missing, row)
+	}
+	return missing
+}
+
+// restoreQueued puts back the items this bot queued in a room that are no
+// longer there.
+//
+// A member who leaves a room takes their queue with them, and the placeholder
+// account holds every unlinked user's songs - so a leave costs those users
+// their queue. The bot knows what it queued and under whose name, so what the
+// room has lost is queued again, in the order it was asked for.
+func (b *Bot) restoreQueued(ctx context.Context, roomID string) {
+	rows, err := b.store.QueuedForRoom(ctx, roomID)
+	if err != nil {
+		b.logger.Warn("bot: could not read the room's queued items", "room", roomID, "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	live, err := b.store.QueuedInRoom(ctx, roomID)
+	if err != nil {
+		b.logger.Warn("bot: could not read the room's live items", "room", roomID, "error", err)
+		return
+	}
+	missing := missingQueued(rows, live)
+	if len(missing) == 0 {
+		return
+	}
+	err = b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
+		room, err := c.JoinRoom(ctx, roomID)
+		if err != nil {
+			return err
+		}
+		added := 0
+		for _, row := range missing {
+			queued, err := room.Queue(ctx, row.TrackID)
+			if err != nil {
+				return err
+			}
+			// The item the room just took is the last one in this member's
+			// queue: that is the id the attribution is kept under, so a song
+			// starting later is still credited to whoever asked for it.
+			items := queued.Queues[room.MemberID]
+			if len(items) == 0 {
+				continue
+			}
+			itemID := items[len(items)-1].ID
+			if err := b.store.RememberQueued(ctx, state.Queued{
+				RoomID: roomID, ItemID: itemID, DiscordID: row.DiscordID, TrackID: row.TrackID,
+			}); err != nil {
+				b.logger.Warn("bot: could not remember a restored item",
+					"room", roomID, "item", itemID, "error", err)
+			}
+			added++
+		}
+		b.logger.Info("bot: put back the items the room had lost",
+			"room", roomID, "items", added, "missing", len(missing))
+		return nil
+	})
+	if err != nil {
+		b.logger.Warn("bot: could not put back the room's queued items",
+			"room", roomID, "error", err)
+	}
 }
 
 // channelBitrateKbps is what a voice channel allows, in kbps: Discord caps the
@@ -499,13 +579,17 @@ const lagReportEvery = 10 * time.Second
 // How long a lost room follower waits before trying again, and how far the
 // wait grows when failures repeat.
 //
-// The floor is short on purpose: the server's socket grace is ten seconds, so
+// Both ends are short on purpose: the server's socket grace is ten seconds, so
 // a follower that comes back inside it never leaves the room at all. A ten
-// second first wait meant the member was removed before the retry, which is
-// the bot dropping out of the listening board and hopping back in later.
+// second first wait meant the member was removed before the retry, which is the
+// bot dropping out of the listening board and hopping back in later. The
+// ceiling was thirty, which did the same thing every time failures repeated:
+// past the grace the member is removed, and a member who leaves takes their
+// queue with them - so the bot came back to a room whose queue had lost every
+// song the unlinked users had asked for.
 const (
 	participantRetryFloor   = time.Second
-	participantRetryCeiling = 30 * time.Second
+	participantRetryCeiling = 5 * time.Second
 )
 
 // watchVoiceState is called for every voice state change in a guild. A channel
