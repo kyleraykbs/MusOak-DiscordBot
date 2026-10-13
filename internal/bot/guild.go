@@ -218,6 +218,12 @@ func (b *Bot) joinRoomAsPlaceholder(ctx context.Context, guildID, channelID, roo
 	}
 
 	b.logger.Info("bot: the mapped room is gone; opening a new one", "room", roomID)
+	// The songs somebody queued through Discord come along: their attribution
+	// moves to the new room, and the restore below puts them back there.
+	carried, carryErr := b.store.QueuedForRoom(ctx, roomID)
+	if carryErr != nil {
+		b.logger.Warn("bot: reading the queue of a gone room", "error", carryErr)
+	}
 	if forgetErr := b.store.ForgetRoom(ctx, guildID, channelID); forgetErr != nil {
 		b.logger.Warn("bot: forgetting a gone room", "error", forgetErr)
 	}
@@ -233,6 +239,14 @@ func (b *Bot) joinRoomAsPlaceholder(ctx context.Context, guildID, channelID, roo
 	if err != nil {
 		return nil, fmt.Errorf("joining the new room %s: %w", fresh, err)
 	}
+	for _, row := range carried {
+		if err := b.store.RememberQueued(ctx, state.Queued{
+			RoomID: fresh, ItemID: row.ItemID, DiscordID: row.DiscordID, TrackID: row.TrackID,
+		}); err != nil {
+			b.logger.Warn("bot: carrying a queued song to the new room", "error", err)
+		}
+	}
+	b.restoreDiscordQueue(ctx, room)
 	return room, nil
 }
 
@@ -385,7 +399,22 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 				return // replaced or stopped
 			}
 			if errors.Is(err, client.ErrRoomClosed) {
-				b.leaveClosedRoom(g, run, guildID, channelID, roomID)
+				// The room closed under this member - the server's own idle
+				// rule, or somebody closing it - and the voice channel is
+				// still there. A fresh room for the channel keeps the music
+				// going; /leave is how the bot is told to stop.
+				b.logger.Info("bot: the room closed; opening a fresh one for this channel",
+					"room", roomID, "channel", channelID)
+				if err := b.store.ForgetRoom(b.ctx, guildID, channelID); err != nil {
+					b.logger.Warn("bot: forgetting a closed room", "error", err)
+				}
+				go func() {
+					<-run.done
+					if _, err := b.startGuild(b.ctx, guildID, channelID); err != nil {
+						b.logger.Warn("bot: could not reopen the room",
+							"channel", channelID, "error", err)
+					}
+				}()
 				return
 			}
 			// A dropped socket is not a closed room: the room is still there
@@ -409,8 +438,20 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 				return err
 			})
 			if client.IsNotFound(rejoinErr) {
-				// The room really did close while we were away.
-				b.leaveClosedRoom(g, run, guildID, channelID, roomID)
+				// The room closed while the socket was away, but the voice
+				// channel did not: reopening a room for it is the fix, and
+				// leaving the channel over a room is what dropped the bot out
+				// of the call. The restart waits for this follower to finish,
+				// since replacing it is how a fresh room gets a fresh player.
+				b.logger.Info("bot: the room closed; opening a fresh one for this channel",
+					"room", roomID, "channel", channelID)
+				go func() {
+					<-run.done
+					if _, err := b.startGuild(b.ctx, guildID, channelID); err != nil {
+						b.logger.Warn("bot: could not reopen the room",
+							"channel", channelID, "error", err)
+					}
+				}()
 				return
 			}
 			if rejoinErr != nil {
@@ -446,22 +487,6 @@ func voiceBitrateKbps(bitsPerSecond int) int {
 		return voice.MaxVoiceBitrateKbps
 	}
 	return kbps
-}
-
-// leaveClosedRoom gives the voice channel back and forgets the mapping, so the
-// next command opens a fresh room.
-func (b *Bot) leaveClosedRoom(g *guildState, run *participantRun, guildID, channelID, roomID string) {
-	b.logger.Info("bot: the room closed", "room", roomID)
-	g.mu.Lock()
-	if g.run == run {
-		g.run = nil
-		g.voiceChannel = ""
-	}
-	g.mu.Unlock()
-	b.voice.close(context.Background(), guildID)
-	if err := b.store.ForgetRoom(context.Background(), guildID, channelID); err != nil {
-		b.logger.Warn("bot: forgetting a closed room", "error", err)
-	}
 }
 
 // lagReportEvery is how often the bot says how far behind the room its audio
@@ -591,14 +616,23 @@ func (t *playTracker) set(current *client.RoomPlayback) {
 		return
 	}
 
-	owners, err := t.store.QueuedInRoom(context.Background(), t.roomID)
-	if err != nil {
-		t.logger.Warn("tracker: queue attribution", "error", err)
-	}
+	// The lookup runs off the event loop: a blocked read is a socket the
+	// server drops, and the database is shared with the rest of the bot.
+	go func(itemID string) {
+		owners, err := t.store.QueuedInRoom(context.Background(), t.roomID)
+		if err != nil {
+			t.logger.Warn("tracker: queue attribution", "error", err)
+			return
+		}
+		t.mu.Lock()
+		if t.current != nil && t.current.itemID == itemID {
+			t.current.discordID = owners[itemID]
+		}
+		t.mu.Unlock()
+	}(current.Item.ID)
 	t.current = &playedSong{
 		itemID:     current.Item.ID,
 		trackID:    current.Item.TrackID,
-		discordID:  owners[current.Item.ID],
 		durationMs: current.DurationMs,
 		startedAt:  now,
 	}
@@ -631,14 +665,17 @@ func (t *playTracker) recordLocked(now time.Time) {
 	if ms < 5_000 {
 		return
 	}
-	if err := t.store.RecordPlay(context.Background(), song.discordID, song.trackID, ms, now.UnixMilli()); err != nil {
-		t.logger.Warn("tracker: record play", "error", err)
-	}
-	// The song has been heard, so it is not something a re-join should put
-	// back into the queue.
-	if err := t.store.ForgetQueued(context.Background(), t.roomID, song.itemID); err != nil {
-		t.logger.Warn("tracker: forget a played queue item", "error", err)
-	}
+	// Both writes are off the event loop, like the lookup above.
+	go func(song playedSong, ms int64) {
+		if err := t.store.RecordPlay(context.Background(), song.discordID, song.trackID, ms, now.UnixMilli()); err != nil {
+			t.logger.Warn("tracker: record play", "error", err)
+		}
+		// The song has been heard, so it is not something a re-join should put
+		// back into the queue.
+		if err := t.store.ForgetQueued(context.Background(), t.roomID, song.itemID); err != nil {
+			t.logger.Warn("tracker: forget a played queue item", "error", err)
+		}
+	}(*song, ms)
 }
 
 // targetRoom is the room a command is about: the one mapped to the invoker's
