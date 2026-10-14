@@ -187,15 +187,29 @@ func (b *Bot) cmdJoin(ctx context.Context, i *discordgo.InteractionCreate, data 
 // cmdPlay auto-joins the invoker's channel, searches as them (or as the
 // placeholder when unlinked) and queues the top hit for them.
 func (b *Bot) cmdPlay(ctx context.Context, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) (string, error) {
-	roomID, picked, providerNotes, err := b.searchAndQueueRoom(ctx, i, data, 1)
+	// The queue comes first, and it does not need a voice connection: it lives
+	// on the server, and joining a Discord voice channel is the part that
+	// stumbles (the handshake, a channel the bot may not be able to enter).
+	// Asking for a song used to fail with the join, which cost the song: now
+	// the song is queued whatever the voice leg does, and the room plays it as
+	// soon as there is a connection to play it through.
+	guildID, channelID, err := b.voiceTarget(i)
 	if err != nil {
 		return "", err
 	}
-	track := picked[0]
-	_, err = b.queueTracks(ctx, userID(i), roomID, []string{track.ID})
+	roomID, err := b.ensureRoom(ctx, guildID, channelID)
 	if err != nil {
 		return "", err
 	}
+	tracks, providerNotes, err := b.searchTracks(ctx, i, strings.TrimSpace(optionValue(data, "query")), 1)
+	if err != nil {
+		return "", err
+	}
+	track := tracks[0]
+	if _, err := b.queueTracks(ctx, userID(i), roomID, []string{track.ID}); err != nil {
+		return "", err
+	}
+
 	msg := fmt.Sprintf("Queued **%s**", track.Title)
 	if artists := strings.Join(track.Artists, ", "); artists != "" {
 		msg += " — " + artists
@@ -204,12 +218,21 @@ func (b *Bot) cmdPlay(ctx context.Context, i *discordgo.InteractionCreate, data 
 	if providerNotes != "" {
 		msg += "\n" + providerNotes
 	}
+	if _, err := b.startGuild(ctx, guildID, channelID); err != nil {
+		msg += fmt.Sprintf("\nQueued, but I could not get into <#%s> yet (%v) — it plays as soon as I am there.", channelID, err)
+	}
 	return msg, nil
 }
 
 // cmdSearch shows the top hits without queueing anything.
 func (b *Bot) cmdSearch(ctx context.Context, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) (string, error) {
-	_, picked, providerNotes, err := b.searchAndQueueRoom(ctx, i, data, 5)
+	// This one does start the bot in the voice channel: seeing the hits is the
+	// first half of "play that", and it is where the music will go. /play
+	// itself queues first, so a join that fails cannot cost a song.
+	if _, err := b.playRoom(ctx, i); err != nil {
+		return "", err
+	}
+	picked, providerNotes, err := b.searchTracks(ctx, i, strings.TrimSpace(optionValue(data, "query")), 5)
 	if err != nil {
 		return "", err
 	}
@@ -229,23 +252,31 @@ func (b *Bot) cmdSearch(ctx context.Context, i *discordgo.InteractionCreate, dat
 	return msg, nil
 }
 
-// searchAndQueueRoom resolves the room the search results will go to (which
-// auto-joins the invoker's voice channel) and searches as the requester.
-func (b *Bot) searchAndQueueRoom(ctx context.Context, i *discordgo.InteractionCreate,
-	data discordgo.ApplicationCommandInteractionData, want int) (string, []*client.Track, string, error) {
-
-	query := strings.TrimSpace(optionValue(data, "query"))
+// searchTracks searches as the person who asked - their own account when they
+// are linked, the placeholder when they are not - and takes the first `want`
+// hits. A provider that stumbles gets one more try before the command gives up:
+// a hiccup is not a song that does not exist, and a search that fails is the
+// other half of "it would not queue my song".
+func (b *Bot) searchTracks(ctx context.Context, i *discordgo.InteractionCreate, query string, want int) ([]*client.Track, string, error) {
 	if query == "" {
-		return "", nil, "", fmt.Errorf("say what to search for")
+		return nil, "", fmt.Errorf("say what to search for")
 	}
-	roomID, err := b.playRoom(ctx, i)
-	if err != nil {
-		return "", nil, "", err
+	var lastErr error
+	for range 2 {
+		picked, notes, err := b.searchOnce(ctx, i, query, want)
+		if err == nil {
+			return picked, notes, nil
+		}
+		lastErr = err
 	}
+	return nil, "", lastErr
+}
 
+// searchOnce is one search, as the requester.
+func (b *Bot) searchOnce(ctx context.Context, i *discordgo.InteractionCreate, query string, want int) ([]*client.Track, string, error) {
 	var picked []*client.Track
 	var providerNotes string
-	_, err = b.accounts.requester(ctx, userID(i), func(c *client.Client) error {
+	_, err := b.accounts.requester(ctx, userID(i), func(c *client.Client) error {
 		result, err := c.Search(ctx, query, 10)
 		if err != nil {
 			return err
@@ -274,23 +305,33 @@ func (b *Bot) searchAndQueueRoom(ctx context.Context, i *discordgo.InteractionCr
 		return nil
 	})
 	if err != nil {
-		return "", nil, "", err
+		return nil, "", err
 	}
-	return roomID, picked, providerNotes, nil
+	return picked, providerNotes, nil
 }
 
-// playRoom is the room a /play is for: the invoker's voice channel's room,
-// starting the bot there — which is what moves it when somebody plays from a
-// different channel.
-func (b *Bot) playRoom(ctx context.Context, i *discordgo.InteractionCreate) (string, error) {
+// voiceTarget is the voice channel a command is for: the invoker's, which is
+// where the music goes. Reading it costs nothing - it is the gateway's own
+// state - and it is the only part of starting playback the queue needs.
+func (b *Bot) voiceTarget(i *discordgo.InteractionCreate) (string, string, error) {
 	if i.GuildID == "" {
-		return "", fmt.Errorf("this only works in a server")
+		return "", "", fmt.Errorf("this only works in a server")
 	}
 	vs, err := b.session.State.VoiceState(i.GuildID, userID(i))
 	if err != nil || vs.ChannelID == "" {
-		return "", fmt.Errorf("join a voice channel first — that is where the music goes")
+		return "", "", fmt.Errorf("join a voice channel first — that is where the music goes")
 	}
-	return b.startGuild(ctx, i.GuildID, vs.ChannelID)
+	return i.GuildID, vs.ChannelID, nil
+}
+
+// playRoom is the room a command is for, with the bot started in it — which is
+// what moves it when somebody plays from a different channel.
+func (b *Bot) playRoom(ctx context.Context, i *discordgo.InteractionCreate) (string, error) {
+	guildID, channelID, err := b.voiceTarget(i)
+	if err != nil {
+		return "", err
+	}
+	return b.startGuild(ctx, guildID, channelID)
 }
 
 // queueTracks puts the songs in the requester's own part of the room's queue:
