@@ -24,7 +24,12 @@ import (
 const DefaultAudioBufferMs = 1500
 
 // DefaultVolume is what the bot plays at unless the config says otherwise.
-const DefaultVolume = 0.5
+//
+// A quarter: Discord's opus is not where headroom is found, and music arrives
+// mastered hot, so the peaks heard at half were the mix reaching the ceiling.
+// A config that sets audioVolume keeps its own number - deleting the key from
+// an existing config.json is what adopts this one.
+const DefaultVolume = 0.25
 
 // Account is the placeholder musoak account: the room member named
 // "Discord Bot" that plays the room's mixed queue and holds every unlinked
