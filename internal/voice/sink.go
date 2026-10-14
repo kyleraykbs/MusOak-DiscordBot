@@ -237,20 +237,26 @@ func (s *Sink) Seek(ctx context.Context, positionMs int64) error {
 	s.seekReq = true
 	rp, active := s.proc, s.active
 	if !active {
-		// Nothing streams: adopt the position for whoever plays next.
+		// Nothing streams: adopt the position for whoever plays next, and drop
+		// what is queued here. There is no play loop to ask, and those frames
+		// were read from the position being left, so they are stale either way.
 		s.posMs = positionMs
 		s.sent = 0
 		s.seekReq = false
+		s.mu.Unlock()
+		s.sender.Drain()
+		return nil
 	}
 	s.mu.Unlock()
 
 	if active && rp != nil {
 		// Wakes a reader blocked mid-file; the loop then sees the pending
-		// seek. A parked loop finds the request when it resumes instead.
+		// seek, warms the new run and only then drops what is queued. The drop
+		// is deliberately not done here: the frames still queued are what plays
+		// while ffmpeg restarts, so dropping them the moment a seek is asked
+		// for is the silence right after it.
 		rp.kill()
 	}
-	// Whatever is queued was read from the position being left, so it goes.
-	s.sender.Drain()
 	return nil
 }
 
@@ -284,6 +290,12 @@ func (s *Sink) stream(ctx context.Context) error {
 	if err := s.sender.Speaking(true); err != nil {
 		s.logger.Debug("voice: speaking", "error", err)
 	}
+	// The start of a track waits for the same thing a seek does: its first
+	// packet, read before anything is handed to the wire.
+	if err := s.sendAll(ctx, s.prefill()); err != nil {
+		s.abort()
+		return err
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -294,6 +306,20 @@ func (s *Sink) stream(ctx context.Context) error {
 		if s.seekPending() {
 			s.takeSeek()
 			if err := s.launch(ctx); err != nil {
+				s.abort()
+				return err
+			}
+			// The new position reaches the wire only once its run has audio in
+			// hand; until then the frames queued from the position being left
+			// are still playing, which is what covers the relaunch. Dropping
+			// them when the seek was asked for is what left the connection
+			// silent until ffmpeg was ready.
+			lead := s.prefill()
+			if s.seekPending() {
+				continue // a newer seek arrived while this run was warming
+			}
+			s.sender.Drain()
+			if err := s.sendAll(ctx, lead); err != nil {
 				s.abort()
 				return err
 			}
@@ -351,6 +377,44 @@ func (s *Sink) stream(ctx context.Context) error {
 // frames themselves.
 func (s *Sink) abort() {
 	_ = s.sender.Speaking(false)
+}
+
+/**/
+// prefill reads the current run's first audio packet, so a swap has something
+// in hand to hand over the moment the old tail is dropped.
+//
+// That is the whole of the warm-up, and it is deliberate: the point is to wait
+// for the new run's first packet *before* dropping what is queued, because the
+// queued frames are the only thing covering ffmpeg's restart. A seek used to
+// kill the run and drain the wire in the same breath, so the connection went
+// empty until a fresh process had started, found the position and encoded its
+// way to a page - a hole, every time somebody seeks, which is the lag heard
+// after one. Reading one packet is enough: it is produced as soon as the run is
+// ready, and the loop sends the rest as they arrive. Waiting for a *burst* here
+// would delay a slow run's first audio for no gain (see the prefill tests).
+func (s *Sink) prefill() [][]byte {
+	for {
+		pkt, err := s.read()
+		if err != nil {
+			return nil // nothing to hand over: the loop's own read reports it
+		}
+		if s.dropHeaderPacket() {
+			continue // OpusHead or OpusTags: a header is not a frame
+		}
+		return [][]byte{pkt}
+	}
+}
+
+// sendAll hands over the packets a prefill collected, the same way the loop
+// sends the ones it reads one at a time.
+func (s *Sink) sendAll(ctx context.Context, packets [][]byte) error {
+	for _, pkt := range packets {
+		if err := s.send(ctx, pkt); err != nil {
+			return err
+		}
+		s.countPacket()
+	}
+	return nil
 }
 
 // send hands a packet over. The sender blocks until it has room, which is the

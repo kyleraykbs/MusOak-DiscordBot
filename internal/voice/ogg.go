@@ -22,16 +22,25 @@ type oggReader struct {
 	r       *bufio.Reader
 	partial []byte   // a packet still being assembled across pages
 	queue   [][]byte // packets completed by the last page
+	// err is the end of the stream, remembered: a caller that peeks past the
+	// last packet (a run being warmed, say) must not turn the run's clean end
+	// into a closed-pipe error for the next caller.
+	err error
 }
 
 func newOggReader(r io.Reader) *oggReader {
 	return &oggReader{r: bufio.NewReaderSize(r, 64<<10)}
 }
 
-// next returns the next packet, or io.EOF when the stream does.
+// next returns the next packet, or io.EOF when the stream does - the same
+// error, on every call after the stream has ended.
 func (o *oggReader) next() ([]byte, error) {
+	if o.err != nil {
+		return nil, o.err
+	}
 	for len(o.queue) == 0 {
 		if err := o.readPage(); err != nil {
+			o.err = err
 			return nil, err
 		}
 	}
