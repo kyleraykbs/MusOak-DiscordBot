@@ -11,11 +11,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/bot"
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/config"
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/bot"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/config"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
 )
 
 func main() {

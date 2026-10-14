@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"sync"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/config"
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/config"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
 )
 
 // accounts owns every musoak session the bot holds: the placeholder account's

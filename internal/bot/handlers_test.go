@@ -7,9 +7,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/link"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/link"
 )
 
 func TestParseTimecode(t *testing.T) {

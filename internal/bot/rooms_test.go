@@ -3,9 +3,9 @@ package bot
 import (
 	"testing"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
 )
 
 func roomWith(id, name string, at int64, members ...client.RoomMember) client.Room {

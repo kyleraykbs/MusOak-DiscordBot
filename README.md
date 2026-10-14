@@ -112,9 +112,9 @@ binary it skips, and both the devShell and the flake check provide it.
 `internal/voice`'s tests drive the sink with generated Ogg pages and the real
 ffmpeg when one is present.
 
-The bot depends on `codeberg.org/kyleraykbs/musoak` through a `replace` to the
+The bot depends on `github.com/kyleraykbs/MusOak` through a `replace` to the
 GitHub mirror — the module path has no repository behind it yet; pointing the
-`replace` at a future codeberg.org/kyleraykbs/musoak is the clean end state.
+`replace` at a future github.com/kyleraykbs/MusOak is the clean end state.
 
 ## License
 

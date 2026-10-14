@@ -11,10 +11,10 @@ import (
 	"github.com/bwmarrin/discordgo"
 	disgovoice "github.com/disgoorg/disgo/voice"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/voice"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/voice"
 )
 
 // guildState is one Discord server's runtime: where the bot's voice

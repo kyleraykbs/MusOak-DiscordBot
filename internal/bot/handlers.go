@@ -10,10 +10,10 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/link"
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/link"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
 )
 
 // ephemeralCommands are the ones nobody else needs to see: identity matters

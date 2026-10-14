@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 )
 
 // PlayedReporter is a Sender that knows how many frames have actually left for

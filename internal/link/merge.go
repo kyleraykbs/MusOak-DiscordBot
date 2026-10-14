@@ -14,9 +14,9 @@ import (
 	"net/http"
 	"sort"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
 )
 
 // playSource is the source musoak's history shows for plays the bot records.

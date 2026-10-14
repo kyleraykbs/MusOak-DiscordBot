@@ -1,13 +1,13 @@
-module codeberg.org/kyleraykbs/musoak-discord-bot
+module github.com/kyleraykbs/MusOak-DiscordBot
 
 go 1.26.5
 
 require (
-	codeberg.org/kyleraykbs/musoak v0.0.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/disgoorg/disgo v0.19.6
 	github.com/disgoorg/godave v0.2.0
 	github.com/disgoorg/snowflake/v2 v2.0.3
+	github.com/kyleraykbs/MusOak v0.0.0-20261014050213-a23fe10bf560
 	github.com/thomas-vilte/dave-go v0.5.1
 	modernc.org/sqlite v1.60.0
 )
@@ -31,5 +31,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
-
-replace codeberg.org/kyleraykbs/musoak => github.com/kyleraykbs/MusOak v0.0.0-20261013072956-a2f68827ce9c

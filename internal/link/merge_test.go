@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"codeberg.org/kyleraykbs/musoak/pkg/client"
+	"github.com/kyleraykbs/MusOak/pkg/client"
 
-	"codeberg.org/kyleraykbs/musoak-discord-bot/internal/state"
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
 )
 
 // startServer runs a real musoakd against a throwaway config and returns its
