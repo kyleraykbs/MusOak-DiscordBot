@@ -144,10 +144,10 @@ func sinkFor(t *testing.T, script string) (*Sink, *fakeSender) {
 func TestFFmpegArgsVolume(t *testing.T) {
 	// Music is mastered hot: the default takes a quarter off, and the config
 	// can say otherwise.
-	if args := ffmpegArgs("/f", 0, 0, 0); !strings.Contains(strings.Join(args, " "), "-af volume=0.750") {
+	if args := ffmpegArgs("/f", 0, 0, 0); !strings.Contains(strings.Join(args, " "), "-af volume=0.750,alimiter=level=disabled:limit=0.891") {
 		t.Errorf("default volume missing: %v", args)
 	}
-	if args := ffmpegArgs("/f", 0, 0, 0.4); !strings.Contains(strings.Join(args, " "), "-af volume=0.400") {
+	if args := ffmpegArgs("/f", 0, 0, 0.4); !strings.Contains(strings.Join(args, " "), "-af volume=0.400,alimiter=level=disabled:limit=0.891") {
 		t.Errorf("configured volume missing: %v", args)
 	}
 }

@@ -37,6 +37,14 @@ const MaxVoiceBitrateKbps = maxVoiceBitrateKbps
 // there, so matching it is both the loudest and the highest quality the
 // channel can carry; the music application is what libopus wants for songs
 // rather than speech.
+//
+// The gain is followed by a limiter, and that order is the point: a gain is a
+// multiplier, and a master that already peaks at full scale (or one whose
+// decoded peaks sit above it) comes out the other side above it again, which
+// clips when the encoder takes it. Three quarters of a hot master is a hope;
+// the limiter is the guarantee, whichever way the source is mastered. Level is
+// disabled so the limiter does not push the peaks back up to full scale after
+// ducking them, which is the same clipping with extra pumping.
 func ffmpegArgs(path string, positionMs int64, bitrateKbps int, volume float64) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -58,7 +66,7 @@ func ffmpegArgs(path string, positionMs int64, bitrateKbps int, volume float64) 
 		"-vn",
 		"-ar", "48000",
 		"-ac", "2",
-		"-af", "volume="+strconv.FormatFloat(volume, 'f', 3, 64),
+		"-af", "volume=" + strconv.FormatFloat(volume, 'f', 3, 64) + ",alimiter=level=disabled:limit=0.891",
 		"-c:a", "libopus",
 		"-application", "audio",
 		"-b:a", strconv.Itoa(bitrateKbps)+"k",
