@@ -290,9 +290,10 @@ func (s *Sink) stream(ctx context.Context) error {
 	if err := s.sender.Speaking(true); err != nil {
 		s.logger.Debug("voice: speaking", "error", err)
 	}
-	// The start of a track waits for the same thing a seek does: its first
-	// packet, read before anything is handed to the wire.
-	if err := s.sendAll(ctx, s.prefill()); err != nil {
+	// The start of a track waits for the same thing a seek does: audio in hand,
+	// read before anything is handed to the wire - a stability buffer's worth of
+	// it, so the connection starts three seconds ahead and stays there.
+	if err := s.sendAll(ctx, s.fill(stabilityPackets)); err != nil {
 		s.abort()
 		return err
 	}
@@ -309,12 +310,12 @@ func (s *Sink) stream(ctx context.Context) error {
 				s.abort()
 				return err
 			}
-			// The new position reaches the wire only once its run has audio in
-			// hand; until then the frames queued from the position being left
-			// are still playing, which is what covers the relaunch. Dropping
-			// them when the seek was asked for is what left the connection
-			// silent until ffmpeg was ready.
-			lead := s.prefill()
+			// The new position reaches the wire only once its run has a
+			// stability buffer in hand; until then the frames queued from the
+			// position being left are still playing, which is what covers the
+			// relaunch. Dropping them when the seek was asked for is what left
+			// the connection silent until ffmpeg was ready.
+			lead := s.fill(stabilityPackets)
 			if s.seekPending() {
 				continue // a newer seek arrived while this run was warming
 			}
@@ -379,34 +380,51 @@ func (s *Sink) abort() {
 	_ = s.sender.Speaking(false)
 }
 
-/**/
-// prefill reads the current run's first audio packet, so a swap has something
-// in hand to hand over the moment the old tail is dropped.
+// stabilityPackets is how much audio the sink tries to have queued ahead of the
+// wire: three seconds of 20ms packets.
 //
-// That is the whole of the warm-up, and it is deliberate: the point is to wait
-// for the new run's first packet *before* dropping what is queued, because the
-// queued frames are the only thing covering ffmpeg's restart. A seek used to
-// kill the run and drain the wire in the same breath, so the connection went
-// empty until a fresh process had started, found the position and encoded its
-// way to a page - a hole, every time somebody seeks, which is the lag heard
-// after one. Reading one packet is enough: it is produced as soon as the run is
-// ready, and the loop sends the rest as they arrive. Waiting for a *burst* here
-// would delay a slow run's first audio for no gain (see the prefill tests).
-func (s *Sink) prefill() [][]byte {
-	for {
+// This is the buffer a poor connection needs. The wire is fed in bursts and it
+// stalls - a congested uplink, a lost packet, a round trip that took the long
+// way - and whatever is already queued is what plays through the stall. Without
+// it the connection runs dry mid-song, and running dry is the clicking. Three
+// seconds is the delay this had before it was reduced to a single packet's
+// worth of warm-up; on a bad line the delay is the point.
+const stabilityPackets = 150
+
+// fill reads up to n audio packets, taking only what the producer has already
+// written: the reader's own buffer is what it goes by, so a run that is
+// producing slowly hands over what it has rather than holding up the start of a
+// song waiting for a buffer that is not coming. The first packet is read
+// blocking, because a run that has produced nothing yet is a run that is not
+// ready - and that wait is covered by whatever the connection is still playing.
+func (s *Sink) fill(n int) [][]byte {
+	out := make([][]byte, 0, n)
+	for len(out) < n {
+		if len(out) > 0 && !s.readerReady() {
+			break // nothing more on hand: the loop picks it up as it arrives
+		}
 		pkt, err := s.read()
 		if err != nil {
-			return nil // nothing to hand over: the loop's own read reports it
+			break
 		}
 		if s.dropHeaderPacket() {
 			continue // OpusHead or OpusTags: a header is not a frame
 		}
-		return [][]byte{pkt}
+		out = append(out, pkt)
 	}
+	return out
 }
 
-// sendAll hands over the packets a prefill collected, the same way the loop
-// sends the ones it reads one at a time.
+// readerReady is whether the current run has more in hand right now.
+func (s *Sink) readerReady() bool {
+	s.mu.Lock()
+	rp := s.proc
+	s.mu.Unlock()
+	return rp != nil && rp.reader.ready()
+}
+
+// sendAll hands over the packets a fill collected, the same way the loop sends
+// the ones it reads one at a time.
 func (s *Sink) sendAll(ctx context.Context, packets [][]byte) error {
 	for _, pkt := range packets {
 		if err := s.send(ctx, pkt); err != nil {

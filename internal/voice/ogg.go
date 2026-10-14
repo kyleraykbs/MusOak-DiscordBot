@@ -49,6 +49,14 @@ func (o *oggReader) next() ([]byte, error) {
 	return pkt, nil
 }
 
+// ready reports whether anything more is already in hand: a packet queued from
+// the last page, or bytes of the next one already read off the pipe. It is how
+// a caller fills a buffer with what a producer has already written, without
+// waiting for more that may not come for a while.
+func (o *oggReader) ready() bool {
+	return len(o.queue) > 0 || o.r.Buffered() > 0
+}
+
 // readPage finds the next page and turns its lacing values into packets.
 func (o *oggReader) readPage() error {
 	if err := o.findSync(); err != nil {
