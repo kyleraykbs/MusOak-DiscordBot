@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -208,9 +209,19 @@ func (b *Bot) registerGuild(guildID string) error {
 	return nil
 }
 
-// Close ends every participant, the service lifetime and the gateway.
+// Close ends every participant, the service lifetime, the voice connections
+// and the gateway.
 func (b *Bot) Close() {
 	b.stopAll()
 	b.cancel()
+	// The voice connections go before the gateway: hanging them up is a voice
+	// state update, and a closed Discord session has nobody left to send it.
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	b.voice.closeAll(ctx)
 	_ = b.session.Close()
 }
+
+// shutdownGrace bounds the shutdown's own network work, so a Discord or voice
+// gateway that has stopped answering cannot hold the process open.
+const shutdownGrace = 10 * time.Second

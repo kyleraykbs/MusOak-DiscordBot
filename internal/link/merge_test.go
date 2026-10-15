@@ -1,156 +1,24 @@
 package link
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
-	"fmt"
-	"math"
-	"net"
 	"net/http"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"github.com/kyleraykbs/MusOak/pkg/client"
-
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/musoakdtest"
 	"github.com/kyleraykbs/MusOak-DiscordBot/internal/state"
 )
 
-// startServer runs a real musoakd against a throwaway config and returns its
-// base URL. The binary comes from $MUSOAKD or the PATH — the devShell and the
-// flake check both put it there — and without it there is no contract worth
-// testing, so the test steps aside rather than faking the server it is here to
-// pin.
-func startServer(t *testing.T) string {
-	t.Helper()
-	bin := os.Getenv("MUSOAKD")
-	if bin == "" {
-		looked, err := exec.LookPath("musoakd")
-		if err != nil {
-			t.Skip("musoakd not found: set MUSOAKD or run inside the devShell")
-		}
-		bin = looked
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.json")
-	config := fmt.Sprintf("{\"listen\":%q,\"storageDir\":%q}\n", addr, filepath.Join(dir, "storage"))
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command(bin, "--config", configPath)
-	var log bytes.Buffer
-	cmd.Stdout = &log
-	cmd.Stderr = &log
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start musoakd: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
-		}
-		if t.Failed() {
-			t.Logf("musoakd output:\n%s", log.String())
-		}
-	})
-
-	base := "http://" + addr
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		resp, err := http.Get(base + "/healthz")
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return base
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("musoakd never became healthy: %v\n%s", err, log.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-// writeWAV renders a short sine as a 44.1kHz mono PCM file the server can
-// import, so the test has real tracks without touching a provider.
-func writeWAV(t *testing.T, name string, seconds float64) string {
-	t.Helper()
-	const sampleRate = 44100
-	samples := int(seconds * sampleRate)
-	dataBytes := samples * 2
-	path := filepath.Join(t.TempDir(), name)
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	freq := 440.0
-	if strings.HasPrefix(name, "Beta") {
-		freq = 330.0
-	}
-	header := make([]byte, 44)
-	copy(header[0:], "RIFF")
-	binary.LittleEndian.PutUint32(header[4:], uint32(36+dataBytes))
-	copy(header[8:], "WAVEfmt ")
-	binary.LittleEndian.PutUint32(header[16:], 16)
-	binary.LittleEndian.PutUint16(header[20:], 1) // PCM
-	binary.LittleEndian.PutUint16(header[22:], 1) // mono
-	binary.LittleEndian.PutUint32(header[24:], sampleRate)
-	binary.LittleEndian.PutUint32(header[28:], sampleRate*2)
-	binary.LittleEndian.PutUint16(header[32:], 2)
-	binary.LittleEndian.PutUint16(header[34:], 16)
-	copy(header[36:], "data")
-	binary.LittleEndian.PutUint32(header[40:], uint32(dataBytes))
-	if _, err := f.Write(header); err != nil {
-		t.Fatal(err)
-	}
-	samplesBuf := make([]byte, dataBytes)
-	for i := range samples {
-		value := 0.4 * math.Sin(2*math.Pi*freq*float64(i)/sampleRate)
-		binary.LittleEndian.PutUint16(samplesBuf[i*2:], uint16(int16(value*math.MaxInt16)))
-	}
-	if _, err := f.Write(samplesBuf); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func mustRegister(t *testing.T, base, name string) *client.Client {
-	t.Helper()
-	auth, err := client.New(base).Register(context.Background(), name, "secret")
-	if err != nil {
-		t.Fatalf("register %s: %v", name, err)
-	}
-	return client.New(base, client.WithToken(auth.Token))
-}
-
 func TestMergeMovesEverythingAttributable(t *testing.T) {
-	base := startServer(t)
+	base := musoakdtest.StartServer(t)
 	ctx := context.Background()
 
-	ph := mustRegister(t, base, "discord-bot")
-	user := mustRegister(t, base, "kyle")
+	ph := musoakdtest.Register(t, base, "discord-bot")
+	user := musoakdtest.Register(t, base, "kyle")
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -158,15 +26,8 @@ func TestMergeMovesEverythingAttributable(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 
 	// Two real tracks, imported from generated audio.
-	first, err := ph.ImportPath(ctx, writeWAV(t, "Alpha Song.wav", 2.1))
-	if err != nil || len(first.Imported) == 0 {
-		t.Fatalf("import first: %v %+v", err, first)
-	}
-	second, err := ph.ImportPath(ctx, writeWAV(t, "Beta Song.wav", 3.4))
-	if err != nil || len(second.Imported) == 0 {
-		t.Fatalf("import second: %v %+v", err, second)
-	}
-	one, two := first.Imported[0].Track.ID, second.Imported[0].Track.ID
+	one := musoakdtest.Import(t, ph, "Alpha Song.wav", 2.1)
+	two := musoakdtest.Import(t, ph, "Beta Song.wav", 3.4)
 
 	// What an unlinked Discord user builds on the placeholder account.
 	playlist, err := ph.CreatePlaylist(ctx, "Road Trip")

@@ -320,6 +320,12 @@ func (m *Merger) mergeRoomQueue(ctx context.Context, discordID string, user *cli
 	sum.Queued += len(live)
 }
 
+// apiClient is the HTTP client for the POST below, the one call the SDK does
+// not carry. http.DefaultClient has no timeout at all, so a server that accepts
+// the connection and then never answers would hang the link that is waiting on
+// it - and the merge is a person's link, not a background job.
+var apiClient = &http.Client{Timeout: client.DefaultTimeout}
+
 // recordPlay is the one call the SDK does not have: POST /me/plays.
 func recordPlay(ctx context.Context, baseURL, token string, play state.Play) error {
 	body, err := json.Marshal(map[string]any{
@@ -339,7 +345,7 @@ func recordPlay(ctx context.Context, baseURL, token string, play state.Play) err
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return err
 	}

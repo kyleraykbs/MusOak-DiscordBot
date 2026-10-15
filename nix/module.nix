@@ -88,18 +88,22 @@ in
 
     audioBufferMs = mkOption {
       type = types.ints.between 60 10000;
-      default = 3000;
+      default = 2000;
       description = ''
-        Audio kept through the wire ahead of the voice connection. It absorbs
-        hiccups and an inconsistent uplink; the bot plays that far behind the
-        room, and its drift tolerance follows.
+        Audio kept queued ahead of the voice connection. It absorbs hiccups and
+        an inconsistent uplink; the bot plays that far behind the room, and its
+        drift tolerance follows. Kept in step with the bot's own default.
       '';
     };
 
     audioVolume = mkOption {
       type = types.numbers.between 0.0 2.0;
-      default = 0.5;
-      description = "Gain applied before encoding, as a fraction of each file's own level.";
+      default = 0.125;
+      description = ''
+        Gain applied before encoding, as a fraction of each file's own level.
+        The default is the bot's: music arrives mastered hot, and an eighth
+        keeps a full-scale mix clear of the ceiling.
+      '';
     };
 
     audioBitrateKbps = mkOption {

@@ -3,7 +3,8 @@
 ## Audio consistency (from amanita's journal, 2026-10-14) - done 2026-10-15
 
 Committed as `voice: a seek counts its own frames, and a stalled connection is
-rebuilt` (0a206aa). Evidence and message meanings: agents/NOTES.md.
+rebuilt` (ace8aab; the 0a206aa it was first written under is an orphan from
+before the rebase). Evidence and message meanings: agents/NOTES.md.
 
 1. DONE — the stalled sender. The watchdog counted any single frame of progress
    as health, so `giveUpAfter` was unreachable and it re-installed a provider
@@ -28,3 +29,10 @@ rebuilt` (0a206aa). Evidence and message meanings: agents/NOTES.md.
 once as a storm of ten in one millisecond). Each one refetches the snapshot and
 reconciles, and the long dry runs (27s, 12min, 32min) all follow one within
 seconds. Needs Kyle's go-ahead before touching `~/projects/musoak`.
+
+A song the server has not downloaded yet still waits for the whole download
+before a note sounds here, because a `Participant` plays local files only. The
+streaming API that closes it (`MediaURL(variant, startMs)`, `MediaStreamInfo`)
+is uncommitted in `~/projects/musoak` as of 2026-10-15 and the bot's pinned SDK
+has only the offset-less `MediaURL`. What closing it takes, in order, and why
+this repo left it alone: `agents/NOTES.md`.

@@ -122,6 +122,11 @@ func (a *accounts) requester(ctx context.Context, discordID string, fn func(*cli
 	return false, a.withPlaceholder(ctx, fn)
 }
 
+// apiClient is the HTTP client for the PATCH below, the one call the SDK does
+// not carry. http.DefaultClient has no timeout at all, which would leave
+// startup hung on a server that accepts the connection and then never answers.
+var apiClient = &http.Client{Timeout: client.DefaultTimeout}
+
 // setDisplayName pins the placeholder account's display name — the name the
 // room shows for every unlinked user's queue items.
 func (a *accounts) setDisplayName(ctx context.Context) error {
@@ -140,7 +145,7 @@ func (a *accounts) setDisplayName(ctx context.Context) error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.Token())
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := apiClient.Do(req)
 		if err != nil {
 			return err
 		}

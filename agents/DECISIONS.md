@@ -32,3 +32,44 @@
   follower's drift correction never lands there (it only seeks past the
   tolerance), so this is for the room's controls.
 - Reversible: yes
+
+## 2026-10-15 A join is bounded, and its audio leg goes with the run
+- Decision: `startGuild` wraps the whole join (room lookup/creation, Discord's
+  voice handshake, the placeholder's room membership) in `voiceJoinTimeout`
+  (20s, a var so a test can shorten it), and `participantRun` carries a
+  `stopAudio` that `stop()` calls once the run's loop has left. `Bot.Close`
+  closes the voice manager as well, under `shutdownGrace`.
+- Why: three separate ways the bot could not come back from a stuck network
+  leg. (1) `voiceHub.open` and `joinRoomAsPlaceholder` were handed the service
+  lifetime, so `/join` and `/play` waited forever on a voice gateway or a
+  musoak server that never answered — and the half-built connection stayed in
+  the manager, so the retry joined the same dead one. (2) Every join and leave
+  built a fresh `ConnSender` whose watchdog goroutine ticked a timer every two
+  seconds for the life of the process: nothing ever closed it, because closing
+  it is not `Sink.Stop`'s job (the sink must survive a track change). (3)
+  Shutdown stopped the participants and closed the Discord gateway but left the
+  voice connections up, so the bot sat in the channel until Discord timed it
+  out and its voice gateway and UDP socket were never hung up.
+- Reversible: yes
+
+## 2026-10-15 Attribute a queue call from the room it answers with
+- Decision: `queueTracks` records attribution from the `QueueMany` response —
+  the items it added are the tail of the placeholder member's own queue, one
+  batch at a time (`client.MaxQueueBatch`) — instead of snapshotting the room
+  before and after the call.
+- Why: the room a queue call answers with is the state after that call, so the
+  pre-call snapshot was a whole-room fetch for information already in hand, and
+  the post-call one a second. Two fewer round trips per song an unlinked person
+  queues, and the attribution is exact under concurrent queueing: items someone
+  else added arrive before ours in the response, never between our own items.
+- Reversible: yes
+
+## 2026-10-15 The wait for a first play stays, and why
+- Decision: the bot keeps playing from the SDK's cache; streaming a song the
+  server has not downloaded is left to the SDK (`agents/NOTES.md` has the
+  evidence and what closing it would take).
+- Why: a bot-side stream leg means a second room follower in this repo, and the
+  pinned SDK (`a23fe10`) has no offset-carrying `MediaURL` to stream mid-song
+  with, so the fix cannot be written correctly here yet. It is a dependency and
+  an SDK decision, not a defect in this repo's playback path.
+- Reversible: yes

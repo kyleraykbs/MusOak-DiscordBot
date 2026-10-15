@@ -1,5 +1,42 @@
 # NOTES
 
+## Why the bot still waits for a whole download (2026-10-15)
+
+The server can stream a song it has not downloaded yet: `GET
+/api/v1/media/{id}?start=<ms>` answers with the provider's own fetch, marked
+`X-Musoak-Stream: 1`, and `X-Musoak-Duration` carries the length. The CLI plays
+from exactly that URL. The bot does not, and a first play therefore costs a
+whole download — the server's provider fetch, its transcode, its probe, then the
+transfer — before a note sounds. Read it, in order:
+
+1. The bot's audio leg is `pkg/client`'s `Participant`, and a `Participant`
+   hands its `Sink` a local file only: `load` looks the track up in the `Cache`
+   and calls `warm` (a whole-file `cache.Fetch` → `StartDownloadAndWait`) when
+   it is not there. The bot never fetches anything itself, so there is no
+   stream leg for it to use and nothing in this repo to point at a URL.
+2. Against the SDK the bot is pinned to (`go.mod`: `a23fe10`, 2026-10-14), the
+   streaming API is not usable even if a stream leg existed:
+   `Client.MediaURL(variantID string)` takes no start offset — the `?start=`
+   form and `MediaStreamInfo`/`StreamInfo` are uncommitted work in
+   `~/projects/musoak` (`pkg/client/client.go`, `pkg/client/media.go`) as of
+   this note. A stream without the offset restarts a song the room is a minute
+   into, which is worse than catching up mid-song later.
+
+So closing this is two changes, neither in this repo's boundary: the SDK's
+streaming API lands (commit it, then move the bot's pseudo-version), and then
+either
+
+- the SDK's `Participant` learns to hand the sink a URL for a variant the cache
+  does not hold (one convention, the CLI's, and the drift correction stays in
+  one place) — preferred; or
+- the bot grows its own room follower, duplicating the follower rule, the
+  prefetch, the drift correction and the local advance that `Participant`
+  already implements — not preferred, and the reason it was left alone.
+
+What is *not* the problem: the room's next songs are prefetched (three ahead,
+two at a time) the moment they are queued, so a song already on disk starts
+without a download. The wait is only ever for a song the bot has never held.
+
 ## Audio behaviour: read it from amanita's journal, not from the code
 
 2026-10-14. The bot logs its own audio pipeline in detail, and the deployed

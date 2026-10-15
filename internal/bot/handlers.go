@@ -51,6 +51,9 @@ func (b *Bot) onInteraction(i *discordgo.InteractionCreate) {
 			return
 		}
 		if err := b.deferReply(i, true); err != nil {
+			// Nothing else will answer this one: a link that was submitted and
+			// never acknowledged has to be visible in the log.
+			b.logger.Warn("bot: could not acknowledge the link form", "error", err)
 			return
 		}
 		answer := b.linkFromModal(i)
@@ -356,38 +359,34 @@ func (b *Bot) queueTracks(ctx context.Context, discordID, roomID string, trackID
 	}
 
 	// The placeholder holds these: remember which items were theirs so the
-	// merge can move them later.
+	// merge can move them later. The room a queue call answers with is the
+	// state after that call, so the items it added are the tail of this
+	// member's own queue - a snapshot before the call to diff against would be
+	// the same whole room fetched twice.
 	added := 0
 	err = b.accounts.withPlaceholder(ctx, func(c *client.Client) error {
 		room, err := c.JoinRoom(ctx, roomID)
 		if err != nil {
 			return err
 		}
-		before, err := room.Snapshot(ctx)
-		if err != nil {
-			return err
-		}
-		seen := map[string]bool{}
-		for _, item := range before.Queues[room.MemberID] {
-			seen[item.ID] = true
-		}
-		if _, err := room.QueueMany(ctx, trackIDs); err != nil {
-			return err
-		}
-		after, err := room.Snapshot(ctx)
-		if err != nil {
-			return err
-		}
-		for _, item := range after.Queues[room.MemberID] {
-			if seen[item.ID] {
-				continue
+		for start := 0; start < len(trackIDs); start += client.MaxQueueBatch {
+			batch := trackIDs[start:min(start+client.MaxQueueBatch, len(trackIDs))]
+			after, err := room.QueueMany(ctx, batch)
+			if err != nil {
+				return err
 			}
-			if err := b.store.RememberQueued(ctx, state.Queued{
-				RoomID: roomID, ItemID: item.ID, DiscordID: discordID, TrackID: item.TrackID,
-			}); err != nil {
-				b.logger.Warn("bot: queue attribution", "error", err)
+			queued := after.Queues[room.MemberID]
+			if len(queued) < len(batch) {
+				continue // the room answered without its queue agreeing
 			}
-			added++
+			for _, item := range queued[len(queued)-len(batch):] {
+				if err := b.store.RememberQueued(ctx, state.Queued{
+					RoomID: roomID, ItemID: item.ID, DiscordID: discordID, TrackID: item.TrackID,
+				}); err != nil {
+					b.logger.Warn("bot: queue attribution", "error", err)
+				}
+				added++
+			}
 		}
 		return nil
 	})

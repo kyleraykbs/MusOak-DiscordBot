@@ -1,8 +1,5 @@
-// Package voice plays a musoak room's song into a Discord voice channel. It
-// is one of the Sink implementations pkg/client anticipates: ffmpeg turns the
-// cached Ogg/Opus file into fixed 20ms frames on stdout, an Ogg page parser
-// splits them into packets, and discordgo's voice connection paces the packets
-// onto the wire at 20ms each.
+// Ogg page parsing for the sink: it splits what ffmpeg writes on stdout into
+// the opus packets the voice connection takes, one packet at a time.
 package voice
 
 import (

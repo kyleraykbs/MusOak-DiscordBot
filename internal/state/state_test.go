@@ -134,13 +134,10 @@ func TestOwnershipIsPerUserAndConsumable(t *testing.T) {
 	if len(refs) != 1 || refs[0] != "p2" {
 		t.Errorf("after consuming p1: %v, want [p2]", refs)
 	}
-
-	all, err := s.OwnedList(ctx, "playlist")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != 2 {
-		t.Errorf("OwnedList = %+v, want d1/p2 and d2/p3", all)
+	// Another user's rows are untouched by that.
+	refs, _ = s.Owned(ctx, "d2", "playlist")
+	if len(refs) != 1 || refs[0] != "p3" {
+		t.Errorf("d2's playlists = %v, want [p3]", refs)
 	}
 }
 
@@ -183,7 +180,7 @@ func TestPlaysRecordAndConsume(t *testing.T) {
 	}
 }
 
-func TestQueuedAttributionLookupAndPrune(t *testing.T) {
+func TestQueuedAttributionLookupAndForget(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 
@@ -213,15 +210,18 @@ func TestQueuedAttributionLookupAndPrune(t *testing.T) {
 		t.Errorf("owners = %v", owners)
 	}
 
-	// i2 left the room; i1 is still there.
-	if err := s.PruneQueued(ctx, "r1", map[string]bool{"i1": true}); err != nil {
+	// i2 left the room: its row goes, i1's stays, and nothing else is touched.
+	if err := s.ForgetQueued(ctx, "r1", "i2"); err != nil {
 		t.Fatal(err)
 	}
 	if owners, _ := s.QueuedInRoom(ctx, "r1"); len(owners) != 1 || owners["i1"] != "d1" {
-		t.Errorf("after prune: %v", owners)
+		t.Errorf("after forgetting i2: %v", owners)
 	}
 	if by, _ := s.QueuedBy(ctx, "d2"); len(by) != 0 {
 		t.Errorf("d2 still attributed to a gone item: %+v", by)
+	}
+	if by, _ := s.QueuedBy(ctx, "d1"); len(by) != 2 {
+		t.Errorf("d1's other room was disturbed: %+v", by)
 	}
 }
 

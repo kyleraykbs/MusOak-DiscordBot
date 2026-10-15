@@ -69,7 +69,7 @@ func ffmpegArgs(path string, positionMs int64, bitrateKbps int, volume float64) 
 		"-vn",
 		"-ar", "48000",
 		"-ac", "2",
-		"-af", "volume=" + strconv.FormatFloat(volume, 'f', 3, 64) + ",alimiter=level=disabled:limit=0.891",
+		"-af", "volume="+strconv.FormatFloat(volume, 'f', 3, 64)+",alimiter=level=disabled:limit=0.891",
 		"-c:a", "libopus",
 		"-application", "audio",
 		"-b:a", strconv.Itoa(bitrateKbps)+"k",

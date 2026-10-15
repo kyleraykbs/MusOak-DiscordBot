@@ -34,11 +34,19 @@ type participantRun struct {
 	roomID string
 	cancel context.CancelFunc
 	done   chan struct{}
+	// stopAudio ends this run's voice sender, once its loop has left. Nil when
+	// the run has no audio leg of its own (tests build one to be stopped).
+	stopAudio func()
 }
 
 func (r *participantRun) stop() {
 	r.cancel()
 	<-r.done // nothing else waits on the channel while a lock is held
+	if r.stopAudio != nil {
+		// After the loop, never before: the loop is what sends, and a sender
+		// closed under it turns its last frame into a failed playback.
+		r.stopAudio()
+	}
 }
 
 // guild fetches (creating on first use) a guild's runtime.
@@ -57,6 +65,15 @@ func (b *Bot) guild(guildID string) *guildState {
 // on that channel's room, creating the room when the channel has none yet. It
 // is idempotent: a bot already playing there is left alone.
 func (b *Bot) startGuild(ctx context.Context, guildID, channelID string) (string, error) {
+	// Every network leg of the join is bounded: the room lookup and creation,
+	// Discord's voice handshake, and the room membership behind it all wait on
+	// somebody else answering. An answer that never came used to leave the
+	// command thinking forever and the bot convinced it was joining - with
+	// nothing to retry, because the half-built connection stayed in the
+	// manager.
+	ctx, cancel := context.WithTimeout(ctx, voiceJoinTimeout)
+	defer cancel()
+
 	roomID, err := b.ensureRoom(ctx, guildID, channelID)
 	if err != nil {
 		return "", err
@@ -77,11 +94,15 @@ func (b *Bot) startGuild(ctx context.Context, guildID, channelID string) (string
 	if err != nil {
 		return "", err
 	}
-	if err := b.startParticipant(g, guildID, channelID, roomID, conn); err != nil {
+	if err := b.startParticipant(ctx, g, guildID, channelID, roomID, conn); err != nil {
 		return "", err
 	}
 	return roomID, nil
 }
+
+// voiceJoinTimeout bounds one join: the voice handshake with Discord and the
+// room membership that follows it. A var so a test can shorten it.
+var voiceJoinTimeout = 20 * time.Second
 
 // stopParticipant ends the guild's participant and waits for it to leave. It
 // releases the guild lock before waiting, because the participant's own exit
@@ -354,9 +375,10 @@ func planRestore(rows []state.Queued, present map[string]bool) (missing []state.
 
 // startParticipant attaches a fresh participant — the placeholder's
 // membership, a voice sink, and the play tracker — and runs it until the room
-// closes or it is replaced.
-func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string, conn disgovoice.Conn) error {
-	room, err := b.joinRoomAsPlaceholder(context.Background(), guildID, channelID, roomID)
+// closes or it is replaced. ctx bounds the join (see startGuild); the audio
+// itself lives on the service lifetime.
+func (b *Bot) startParticipant(ctx context.Context, g *guildState, guildID, channelID, roomID string, conn disgovoice.Conn) error {
+	room, err := b.joinRoomAsPlaceholder(ctx, guildID, channelID, roomID)
 	if err != nil {
 		return err
 	}
@@ -371,7 +393,8 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 	reconnect := func(ctx context.Context) (disgovoice.Conn, error) {
 		return b.voice.reconnect(ctx, guildID, channelID)
 	}
-	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames, b.logger, b.voice.shouldHoldFrames, reconnect), b.logger)
+	sender := voice.NewConnSender(conn, bufferFrames, b.logger, b.voice.shouldHoldFrames, reconnect)
+	sink := voice.NewSink("ffmpeg", sender, b.logger)
 	bitrate := b.cfg.AudioBitrateKbps
 	if bitrate <= 0 {
 		bitrate = channelBitrateKbps(b.session, channelID)
@@ -389,7 +412,15 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 	participant.OnEvent = tracker.event
 
 	ctx, cancel := context.WithCancel(b.ctx)
-	run := &participantRun{roomID: roomID, cancel: cancel, done: make(chan struct{})}
+	run := &participantRun{
+		roomID: roomID,
+		cancel: cancel,
+		done:   make(chan struct{}),
+		// The sender's watchdog is a goroutine and a timer, and it is this
+		// run's alone: a run that is over closes it, or every join and leave
+		// leaves one ticking for the life of the process.
+		stopAudio: sender.Close,
+	}
 
 	g.mu.Lock()
 	g.voiceChannel = channelID

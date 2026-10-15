@@ -50,13 +50,17 @@ type ConnSender struct {
 	// dry counts the pulls that found nothing queued since the last one that
 	// did: a run of them is a gap in the audio, and it is worth saying out
 	// loud rather than leaving to be heard. gaps is how many such runs there
-	// have been, and worstFrames the longest of them.
+	// have been, and worstFrames the longest of them. They are guarded by
+	// statsMu, not mu: a re-install gives the connection a fresh pull loop and
+	// closes the old one, and a call the old loop had already started runs
+	// beside the new one.
 	dry         int
 	gaps        int
 	worstFrames int
 	// holding is whether the last pull held, so the transition is logged once.
 	holding    bool
 	heldFrames int64
+	statsMu    sync.Mutex
 
 	// The watchdog's knobs, so a test can make it quick.
 	watchEvery  time.Duration
@@ -333,40 +337,22 @@ func (s *ConnSender) provide(live chan struct{}) ([]byte, error) {
 		s.noteHeld()
 		return nil, nil
 	}
-	if s.holding {
-		s.holding = false
+	if held, frames := s.takeHolding(); held {
 		s.logger.Info("voice: frames flowing again after a DAVE epoch change",
-			"held_frames", s.heldFrames)
-		s.heldFrames = 0
+			"held_frames", frames)
 	}
 
 	select {
 	case frame := <-s.queue:
 		s.played.Add(1)
-		if s.dry > 0 {
-			s.gaps++
-			if s.dry > s.worstFrames {
-				s.worstFrames = s.dry
-			}
-			if s.dry >= dryFramesWorthSaying {
-				s.logger.Warn("voice: the audio buffer ran dry",
-					"frames", s.dry, "ms", s.dry*frameMs, "gaps", s.gaps, "worst_ms", s.worstFrames*frameMs,
-					"since_drain_ms", sinceDrain(&s.drainedAt))
-			} else {
-				// Short enough to be a click rather than a hole, and still
-				// worth counting: a run of these is what choppy sounds like.
-				s.logger.Debug("voice: the audio buffer briefly empty",
-					"frames", s.dry, "ms", s.dry*frameMs, "gaps", s.gaps)
-			}
-		}
-		s.dry = 0
+		s.noteDryGap()
 		return frame, nil
 	case <-live:
 		return nil, io.EOF
 	case <-s.done:
 		return nil, io.EOF
 	default:
-		s.dry++
+		s.countDry()
 		return nil, nil
 	}
 }
@@ -389,12 +375,61 @@ func sinceDrain(stamp *atomic.Int64) int64 {
 // noteHeld counts a frame kept back for a DAVE epoch change, saying so once per
 // change.
 func (s *ConnSender) noteHeld() {
+	s.statsMu.Lock()
 	s.heldFrames++
-	if s.holding {
+	first := !s.holding
+	s.holding = true
+	s.statsMu.Unlock()
+	if first {
+		s.logger.Info("voice: holding frames while the DAVE epoch changes")
+	}
+}
+
+// takeHolding reports whether the last pull held its frames back, and how many
+// it kept: the run is over, so the next hold says so again.
+func (s *ConnSender) takeHolding() (bool, int64) {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	held, frames := s.holding, s.heldFrames
+	s.holding, s.heldFrames = false, 0
+	return held, frames
+}
+
+// countDry is one pull that found nothing queued.
+func (s *ConnSender) countDry() {
+	s.statsMu.Lock()
+	s.dry++
+	s.statsMu.Unlock()
+}
+
+// noteDryGap closes a run of empty pulls and says how long it was: a buffer
+// that ran dry is a gap in the audio, worth saying out loud rather than leaving
+// to be heard.
+func (s *ConnSender) noteDryGap() {
+	s.statsMu.Lock()
+	frames := s.dry
+	if frames == 0 {
+		s.statsMu.Unlock()
 		return
 	}
-	s.holding = true
-	s.logger.Info("voice: holding frames while the DAVE epoch changes")
+	s.dry = 0
+	s.gaps++
+	if frames > s.worstFrames {
+		s.worstFrames = frames
+	}
+	gaps, worst := s.gaps, s.worstFrames
+	s.statsMu.Unlock()
+
+	if frames >= dryFramesWorthSaying {
+		s.logger.Warn("voice: the audio buffer ran dry",
+			"frames", frames, "ms", frames*frameMs, "gaps", gaps, "worst_ms", worst*frameMs,
+			"since_drain_ms", sinceDrain(&s.drainedAt))
+	} else {
+		// Short enough to be a click rather than a hole, and still worth
+		// counting: a run of these is what choppy sounds like.
+		s.logger.Debug("voice: the audio buffer briefly empty",
+			"frames", frames, "ms", frames*frameMs, "gaps", gaps)
+	}
 }
 
 // pullProvider is one install of the connection's frame provider: its Close

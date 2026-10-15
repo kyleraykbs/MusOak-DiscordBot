@@ -164,6 +164,20 @@ func (h *voiceHub) reconnect(ctx context.Context, guildID, channelID string) (vo
 	return h.open(ctx, guildID, channelID)
 }
 
+// closeAll hangs up every voice connection: the process is going away, and a
+// bot that is still "in" the channel waits for Discord to time it out instead
+// of leaving. It also stops each connection's own voice gateway and UDP
+// socket, which nothing else ends.
+func (h *voiceHub) closeAll(ctx context.Context) {
+	h.mu.Lock()
+	manager := h.manager
+	h.mu.Unlock()
+	if manager == nil {
+		return
+	}
+	manager.Close(ctx)
+}
+
 // close leaves the guild's voice channel, if it is in one.
 func (h *voiceHub) close(ctx context.Context, guildID string) {
 	h.mu.Lock()

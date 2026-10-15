@@ -1,7 +1,7 @@
 // Package voice plays a musoak room's song into a Discord voice channel. It
 // is one of the Sink implementations pkg/client anticipates: ffmpeg turns the
 // cached Ogg/Opus file into fixed 20ms frames on stdout, an Ogg page parser
-// splits them into packets, and discordgo's voice connection paces the packets
+// splits them into packets, and disgo's voice connection paces the packets
 // onto the wire at 20ms each.
 package voice
 
@@ -27,8 +27,8 @@ type PlayedReporter interface {
 }
 
 // Sender is the voice connection as the sink needs it: hand a packet over,
-// say whether this member is speaking. DiscordSender adapts discordgo's
-// VoiceConnection; tests use a fake.
+// say whether this member is speaking. ConnSender adapts disgo's voice
+// connection; tests use a fake.
 type Sender interface {
 	// Send hands one opus packet to the connection. It may block while the
 	// connection drains, but not forever.

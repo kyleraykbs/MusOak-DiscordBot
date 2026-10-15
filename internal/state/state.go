@@ -27,15 +27,6 @@ type Link struct {
 	LinkedAt  time.Time
 }
 
-// Owned is one thing an unlinked user created on the placeholder account.
-// Kind is "playlist" (ref is the playlist id) or "favorite" (ref is the
-// track id).
-type Owned struct {
-	DiscordID string
-	Kind      string
-	Ref       string
-}
-
 // Play is one attributed listen of an unlinked user.
 type Play struct {
 	DiscordID string
@@ -201,26 +192,6 @@ func (s *Store) Owned(ctx context.Context, discordID, kind string) ([]string, er
 	return refs, rows.Err()
 }
 
-// OwnedList returns the full ownership rows of one kind for every user, used
-// when the placeholder's objects have to be mapped back to people.
-func (s *Store) OwnedList(ctx context.Context, kind string) ([]Owned, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT discord_id, kind, ref FROM owned WHERE kind = ? ORDER BY discord_id, ref`, kind)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Owned
-	for rows.Next() {
-		var o Owned
-		if err := rows.Scan(&o.DiscordID, &o.Kind, &o.Ref); err != nil {
-			return nil, err
-		}
-		out = append(out, o)
-	}
-	return out, rows.Err()
-}
-
 // ForgetOwned consumes ownership rows, called once they have been merged.
 func (s *Store) ForgetOwned(ctx context.Context, discordID, kind string, refs ...string) error {
 	for _, ref := range refs {
@@ -338,31 +309,6 @@ func (s *Store) ForgetQueued(ctx context.Context, roomID string, itemIDs ...stri
 		}
 	}
 	return nil
-}
-
-// PruneQueued drops attribution for items no longer in the room. live is the
-// item ids the room currently holds.
-func (s *Store) PruneQueued(ctx context.Context, roomID string, live map[string]bool) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT item_id FROM queued WHERE room_id = ?`, roomID)
-	if err != nil {
-		return err
-	}
-	var stale []string
-	for rows.Next() {
-		var itemID string
-		if err := rows.Scan(&itemID); err != nil {
-			rows.Close()
-			return err
-		}
-		if !live[itemID] {
-			stale = append(stale, itemID)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return s.ForgetQueued(ctx, roomID, stale...)
 }
 
 func scanQueued(rows *sql.Rows) ([]Queued, error) {

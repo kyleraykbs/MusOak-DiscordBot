@@ -74,12 +74,20 @@ listen along.
    |`token`|Discord bot token; `MUSOAK_DISCORD_TOKEN` wins over the file|
    |`serverURL`|the musoak server|
    |`guilds`|servers to register commands in. Empty = every server the bot is in, registered the moment it is invited (a global set would take an hour to appear)|
-   |`account.username/password`|the placeholder account|
+   |`account.username/password`|the placeholder account; `MUSOAK_DISCORD_PASSWORD` wins over the file, like the token|
    |`account.displayName`|defaults to `"Discord Bot"`, pinned on every start|
    |`state`|sqlite path, default `$XDG_DATA_HOME/musoak-discord-bot/state.db` (mode 0600 — it holds credentials)|
    |`cacheDir`|media cache, default `$XDG_CACHE_HOME/musoak-discord-bot`|
+   |`audioBufferMs`|audio queued ahead of the voice connection, default 2000. The bot plays that far behind the room; the follower's drift tolerance sits past it|
+   |`audioVolume`|gain before encoding, default 0.125. Music is mastered hot; the encoder has no headroom to give back|
+   |`audioBitrateKbps`|encoder bitrate, default 0 = the voice channel's own setting (which is what Discord caps it at)|
 
    Unknown keys are an error, like musoak's own configs.
+
+   `--verbose` logs the voice handshake and every room event at debug level.
+   The three `audio…` keys exist to tune a bad uplink: raising
+   `audioBufferMs` buys tolerance for its lag, and the NixOS module below
+   exposes them as options.
 
 4. **Run it:**
 
@@ -94,9 +102,44 @@ listen along.
    ```ini
    [Service]
    ExecStart=%h/.local/bin/musoak-discord-bot --config %h/.config/musoak-discord-bot/config.json
-   Environment=MUSOAK_DISCORD_TOKEN=…   # optional: keep the token out of the file
+   Environment=MUSOAK_DISCORD_TOKEN=…        # optional: keep the token out of the file
+   Environment=MUSOAK_DISCORD_PASSWORD=…     # optional, for the placeholder account
    Restart=on-failure
    ```
+
+   The flake also carries a NixOS module, which writes the config for you and
+   keeps neither secret in the store:
+
+   ```nix
+   services.musoak-discord-bot = {
+     enable = true;
+     serverURL = "https://music.example.com";
+     tokenFile = config.sops.secrets.discord-token.path;
+     account = {
+       username = "musoak-discord-bot";
+       passwordFile = config.sops.secrets.musoak-bot-password.path;
+     };
+   };
+   ```
+
+   It has options for `guilds`, the placeholder's `displayName`, the three
+   `audio…` keys, the service `user`/`group`, the `package`, and
+   `extraEnvironment`. `nix/module.nix` is the reference.
+
+## What plays, and when
+
+The audio comes from the SDK's room follower: it keeps the room's next songs
+in the media cache as they are queued, plays the cached file with ffmpeg, and
+corrects itself to the room's position. A song that is **not** on disk yet is
+fetched first, so a first play costs a whole download (the server's provider
+fetch, its transcode and probe, then the transfer) before a note sounds.
+
+The server can stream a song it has not downloaded yet (`GET
+/api/v1/media/{id}?start=<ms>` with `X-Musoak-Stream`), which is what the CLI
+plays from, but the bot does not use it: `pkg/client`'s `Participant` hands its
+sink a local file only, and the pinned SDK (see below) has no offset-carrying
+`MediaURL`/`MediaStreamInfo` to build a stream leg on. See `agents/NOTES.md`
+for what closing that would take.
 
 ## Development
 
@@ -108,13 +151,17 @@ nix flake check           # builds and runs the tests with a pinned musoakd
 
 `internal/link`'s contract test spawns a **real musoakd** (`$MUSOAKD`, else
 `musoakd` on PATH) and merges an unlinked history end to end; without the
-binary it skips, and both the devShell and the flake check provide it.
-`internal/voice`'s tests drive the sink with generated Ogg pages and the real
-ffmpeg when one is present.
+binary it skips, and both the devShell and the flake check provide it. The bot
+package's room tests (`internal/bot/rooms_musoakd_test.go`) spawn the same
+server through `internal/musoakdtest`, which is where that harness lives.
+`internal/voice`'s tests drive the sink with generated Ogg pages, scripted
+stand-ins for ffmpeg, and the real ffmpeg when one is present.
 
-The bot depends on `github.com/kyleraykbs/MusOak` through a `replace` to the
-GitHub mirror — the module path has no repository behind it yet; pointing the
-`replace` at a future github.com/kyleraykbs/MusOak is the clean end state.
+The bot depends on `github.com/kyleraykbs/MusOak` by pinned pseudo-version in
+`go.mod` (`a23fe10` at the time of writing) — a client of the SDK like any
+other, with no `replace` and no vendored copy. The flake's `musoak` input
+(`flake.lock`) is only the `musoakd` the contract tests run against, so bump
+the pseudo-version and that input together.
 
 ## License
 

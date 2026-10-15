@@ -4,11 +4,11 @@
 package config
 
 import (
-	"log/slog"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
