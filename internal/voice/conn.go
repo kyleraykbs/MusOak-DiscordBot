@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -43,6 +44,9 @@ type ConnSender struct {
 	once sync.Once
 
 	played atomic.Int64 // frames the connection has actually pulled
+	// drainedAt is when the queue was last emptied on purpose, so a dry run
+	// can be attributed to it (unix millis; zero until the first drain).
+	drainedAt atomic.Int64
 	// dry counts the pulls that found nothing queued since the last one that
 	// did: a run of them is a gap in the audio, and it is worth saying out
 	// loud rather than leaving to be heard. gaps is how many such runs there
@@ -57,15 +61,32 @@ type ConnSender struct {
 	// The watchdog's knobs, so a test can make it quick.
 	watchEvery  time.Duration
 	giveUpAfter int
+	// reconnectTimeout bounds one rebuild, and rebuildLimit how many this
+	// sender may make before it gives up on the audio.
+	reconnectTimeout time.Duration
+	rebuildLimit     int
 
-	mu   sync.Mutex
-	live chan struct{} // the current install's liveness
+	// reconnect rebuilds the voice connection once a fresh pull loop has not
+	// helped. Re-installing a frame provider cannot fix a connection whose own
+	// voice socket is gone: disgo's voice conn closes and unregisters itself
+	// when its voice gateway drops, which also takes the bot out of the
+	// channel, so the frames it was handed go to a closed socket and there is
+	// nothing left to re-install into. Nil means the sender can only give up.
+	reconnect func(ctx context.Context) (voice.Conn, error)
+	// rebuilds counts the connections rebuilt for this sender. Only the
+	// watchdog goroutine touches it.
+	rebuilds int
+
+	mu       sync.Mutex
+	provider *pullProvider // the current install
 }
 
 // NewConnSender attaches a frame provider to the connection and returns the
 // sender the sink pushes into. bufferFrames is how much audio is kept ahead of
-// the wire; anything below a few frames is no buffer at all.
-func NewConnSender(conn voice.Conn, bufferFrames int, logger *slog.Logger, hold func() bool) *ConnSender {
+// the wire; anything below a few frames is no buffer at all. reconnect is asked
+// to build a fresh connection when this one stops taking audio; nil means the
+// sender can only give up on it.
+func NewConnSender(conn voice.Conn, bufferFrames int, logger *slog.Logger, hold func() bool, reconnect func(ctx context.Context) (voice.Conn, error)) *ConnSender {
 	if bufferFrames < 3 {
 		bufferFrames = 3
 	}
@@ -73,66 +94,174 @@ func NewConnSender(conn voice.Conn, bufferFrames int, logger *slog.Logger, hold 
 		logger = slog.Default()
 	}
 	s := &ConnSender{
-		conn:        conn,
-		queue:       make(chan []byte, bufferFrames),
-		logger:      logger,
-		hold:        hold,
-		done:        make(chan struct{}),
-		watchEvery:  2 * time.Second,
-		giveUpAfter: 5,
+		conn:             conn,
+		queue:            make(chan []byte, bufferFrames),
+		logger:           logger,
+		hold:             hold,
+		reconnect:        reconnect,
+		done:             make(chan struct{}),
+		watchEvery:       2 * time.Second,
+		giveUpAfter:      5,
+		rebuildLimit:     2,
+		reconnectTimeout: 15 * time.Second,
 	}
 	s.install()
 	go s.watch()
 	return s
 }
 
-// install gives the connection a fresh pull loop over this sender's queue. The
-// provider is new each time because the connection closes the one it was
-// given when it stops.
+// install gives the connection a fresh pull loop over this sender's queue. A
+// provider is spent once its loop has gone — disgo cancels the loop when it is
+// handed another, and lets the provider itself go nowhere — so the install it
+// replaces is closed here: a pull it had already started must not take a frame
+// out of the queue on its way out.
 func (s *ConnSender) install() {
-	live := make(chan struct{})
+	provider := &pullProvider{sender: s, live: make(chan struct{})}
 	s.mu.Lock()
-	s.live = live
+	previous := s.provider
+	s.provider = provider
+	conn := s.conn
 	s.mu.Unlock()
-	s.conn.SetOpusFrameProvider(&pullProvider{sender: s, live: live})
+	if previous != nil {
+		previous.Close()
+	}
+	conn.SetOpusFrameProvider(provider)
+}
+
+// setConn points the sender at a rebuilt connection and lets the install that
+// served the old one go.
+func (s *ConnSender) setConn(conn voice.Conn) {
+	s.mu.Lock()
+	previous := s.provider
+	s.conn = conn
+	s.mu.Unlock()
+	if previous != nil {
+		previous.Close()
+	}
 }
 
 // watch notices a connection that has stopped pulling while frames wait, and
-// does something about it: re-install, and if that keeps failing, stop
-// pretending the connection works.
+// does something about it.
+//
+// What it looks at is the rate the frames leave at, not progress itself: a pull
+// loop that dies after its first frame still moves the count once per install,
+// and treating that as progress is what made this re-install a provider every
+// few seconds forever, into a connection that had nothing left to install into.
+//
+// A connection mid-DAVE-change holds its frames on purpose, and a quiet one has
+// no frames to take, so neither counts as a stall.
 func (s *ConnSender) watch() {
-	ticker := time.NewTicker(s.watchEvery)
-	defer ticker.Stop()
 	last := s.played.Load()
 	stalls := 0
 	for {
+		// The knobs are read per tick rather than once, so a test can shorten
+		// the wait after the sender has already started.
+		timer := time.NewTimer(s.watchEveryDuration())
 		select {
 		case <-s.done:
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 		played := s.played.Load()
-		if played != last {
-			last, stalls = played, 0
+		moved := played - last
+		last = played
+		if moved >= s.pacedFrames() {
+			stalls = 0
 			continue
 		}
-		if len(s.queue) == 0 {
-			continue // nothing waiting: quiet is allowed
+		if len(s.queue) < minQueuedFrames {
+			continue // nothing (or almost nothing) waiting: quiet is allowed
+		}
+		if s.hold != nil && s.hold() {
+			continue // the frames are held for a DAVE change, not stuck
 		}
 		stalls++
-		if stalls == 1 {
-			s.logger.Warn("voice: the connection stopped pulling audio; restarting its sender",
-				"queued_frames", len(s.queue))
-			s.install()
-			continue
-		}
-		if stalls >= s.giveUpAfter {
-			s.logger.Error("voice: the voice connection will not take audio; giving up on it",
-				"queued_frames", len(s.queue))
-			s.close()
-			return
+		if s.recover(stalls) {
+			stalls = 0
+			last = s.played.Load()
 		}
 	}
+}
+
+// watchEveryDuration and giveUpAfterStalls read the watchdog's knobs under the
+// lock, and tune sets them: a test shortens them after the sender has started,
+// which is exactly when the watchdog is reading them.
+func (s *ConnSender) watchEveryDuration() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.watchEvery
+}
+
+func (s *ConnSender) giveUpAfterStalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.giveUpAfter
+}
+
+func (s *ConnSender) tune(every time.Duration, giveUpAfter int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.watchEvery = every
+	s.giveUpAfter = giveUpAfter
+}
+
+// minQueuedFrames is the backlog that makes a slow tick a stalled connection
+// rather than a slow producer: frames actually waiting to be taken. A producer
+// that cannot keep up leaves the queue empty, and an empty queue is not this
+// connection's fault.
+const minQueuedFrames = 5
+
+// pacedFrames is half of what the wire takes in one watch tick, at the one
+// frame per frameMs the connection paces at. Half, because a tick can catch the
+// queue mid-fill; never less than one, because less than a frame a tick is not
+// a connection that is pulling.
+func (s *ConnSender) pacedFrames() int64 {
+	frames := int64(s.watchEveryDuration() / (frameMs * time.Millisecond))
+	if frames < 2 {
+		frames = 2
+	}
+	return frames / 2
+}
+
+// recover is the watchdog's answer to a stall, in the order it tries them: a
+// fresh pull loop, then a rebuilt connection, and only then giving up on the
+// audio, which fails Send and stops a sink waiting on a connection that is
+// gone. It reports whether the stall count should start over.
+func (s *ConnSender) recover(stalls int) bool {
+	if stalls == 1 {
+		s.logger.Warn("voice: the connection stopped pulling audio; restarting its sender",
+			"queued_frames", len(s.queue), "want_frames_per_tick", s.pacedFrames())
+		s.install()
+		return false
+	}
+	if stalls < s.giveUpAfterStalls() {
+		return false
+	}
+	if s.reconnect == nil || s.rebuilds >= s.rebuildLimit {
+		s.logger.Error("voice: the voice connection will not take audio; giving up on it",
+			"queued_frames", len(s.queue), "rebuilds", s.rebuilds)
+		s.close()
+		return false
+	}
+	// The provider is not the fault, the connection is: rebuild it — a fresh
+	// voice gateway, a fresh UDP socket, a fresh DAVE session, and a re-join of
+	// the voice channel — and follow the audio onto it.
+	ctx, cancel := context.WithTimeout(context.Background(), s.reconnectTimeout)
+	conn, err := s.reconnect(ctx)
+	cancel()
+	if err != nil {
+		s.logger.Error("voice: could not rebuild the voice connection; giving up on the audio",
+			"error", err, "queued_frames", len(s.queue))
+		s.close()
+		return false
+	}
+	s.rebuilds++
+	s.logger.Warn("voice: the voice connection would not take audio; rebuilt it",
+		"queued_frames", len(s.queue), "rebuilds", s.rebuilds)
+	s.setConn(conn)
+	s.install()
+	return true
 }
 
 // PlayedFrames is how many frames have left the queue towards the wire, which
@@ -164,6 +293,10 @@ func (s *ConnSender) Speaking(on bool) error { return nil }
 // Drain drops whatever is queued: the audio behind those frames is no longer
 // wanted (a pause, a stop, an abandoned track).
 func (s *ConnSender) Drain() {
+	// A drain empties the queue on purpose, so a gap that follows one is the
+	// sink's own doing (a seek, a pause) rather than the connection starving.
+	// The dry warning carries this so the two can be told apart in a log.
+	s.drainedAt.Store(time.Now().UnixMilli())
 	for {
 		select {
 		case <-s.queue:
@@ -217,7 +350,8 @@ func (s *ConnSender) provide(live chan struct{}) ([]byte, error) {
 			}
 			if s.dry >= dryFramesWorthSaying {
 				s.logger.Warn("voice: the audio buffer ran dry",
-					"frames", s.dry, "ms", s.dry*frameMs, "gaps", s.gaps, "worst_ms", s.worstFrames*frameMs)
+					"frames", s.dry, "ms", s.dry*frameMs, "gaps", s.gaps, "worst_ms", s.worstFrames*frameMs,
+					"since_drain_ms", sinceDrain(&s.drainedAt))
 			} else {
 				// Short enough to be a click rather than a hole, and still
 				// worth counting: a run of these is what choppy sounds like.
@@ -240,6 +374,17 @@ func (s *ConnSender) provide(live chan struct{}) ([]byte, error) {
 // dryFramesWorthSaying is how long the buffer has to be empty before it is a
 // gap in the audio rather than the space between two frames.
 const dryFramesWorthSaying = 3
+
+// sinceDrain is how long ago the queue was last emptied on purpose, or -1 when
+// it never was. A gap whose length is about this began at the drain; a gap much
+// shorter than it did not.
+func sinceDrain(stamp *atomic.Int64) int64 {
+	at := stamp.Load()
+	if at == 0 {
+		return -1
+	}
+	return time.Now().UnixMilli() - at
+}
 
 // noteHeld counts a frame kept back for a DAVE epoch change, saying so once per
 // change.

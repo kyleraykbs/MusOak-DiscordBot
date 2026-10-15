@@ -1,13 +1,16 @@
 package voice
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,11 +27,17 @@ type fakeSender struct {
 }
 
 func (f *fakeSender) Send(packet []byte) error {
+	f.record(packet)
+	return nil
+}
+
+// record is the one place a frame is counted, so a fake that counts differently
+// (a reporting sender) still counts in the same place.
+func (f *fakeSender) record(packet []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.packets++
 	f.frames = append(f.frames, append([]byte(nil), packet...))
-	return nil
 }
 
 func (f *fakeSender) Speaking(on bool) error {
@@ -217,9 +226,7 @@ type reportingSender struct {
 }
 
 func (r *reportingSender) Send(packet []byte) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.packets++
+	r.record(packet)
 	return nil
 }
 
@@ -368,6 +375,91 @@ func TestSeekRelaunchesAtTheNewPosition(t *testing.T) {
 	}
 }
 
+// A seek moves where the audio is, so the frames played before it are not this
+// run's. The connection's count is rebased at the drain that drops them; without
+// that the position reads the whole run-time ahead of the audio, and the room's
+// own drift correction — which compares that number with the room's — sees a
+// disagreement too large to be one, stops correcting, and leaves the audio where
+// the seek put it until the track changes.
+func TestASeekRebasesThePositionOnTheNewRun(t *testing.T) {
+	pages := writeFixturePages(t, [][][]byte{
+		{[]byte("first")},
+		{[]byte("second"), []byte("third")},
+	})
+	script := writeScript(t, "cat "+pages[0], "sleep 2", "cat "+pages[1])
+
+	sender := &reportingSender{}
+	sink := NewSink(script, sender, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sink.Play(context.Background(), client.SinkTrack{Path: "ignored.opus", PositionMs: 0})
+	}()
+	waitFor(t, 5*time.Second, "the first packet", func() bool { return sender.count() >= 1 })
+
+	// The connection has been playing this run for two minutes.
+	sender.pull(6_000)
+	pos, _ := sink.PositionMs(context.Background())
+	if want := int64(6_000 * frameMs); pos != want {
+		t.Fatalf("position before the seek = %d, want %d", pos, want)
+	}
+
+	if err := sink.Seek(context.Background(), 30_000); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "the seek's run to take over", func() bool {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Play after seek: %v", err)
+			}
+			return true
+		default:
+			return false
+		}
+	})
+
+	// Only the new run's frames count from here.
+	sender.pull(2)
+	pos, _ = sink.PositionMs(context.Background())
+	if want := int64(30_000 + 2*frameMs); pos != want {
+		t.Fatalf("position after the seek = %d, want %d (the frames of the position being left are not this run's)", pos, want)
+	}
+}
+
+// A seek to where the audio already is is not worth a kill, a relaunch, a drain
+// and the refill behind them: that is a hiccup heard for a position nobody is
+// leaving.
+func TestASeekToWhereTheAudioIsDoesNothing(t *testing.T) {
+	pages := writeFixturePages(t, [][][]byte{{[]byte("first")}})
+	script := writeScript(t, "cat "+pages[0], "sleep 30")
+	sink, sender := sinkFor(t, script)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sink.Play(context.Background(), client.SinkTrack{Path: "ignored.opus", PositionMs: 1_000})
+	}()
+	waitFor(t, 5*time.Second, "the first packet", func() bool { return sender.count() >= 1 })
+
+	pos, _ := sink.PositionMs(context.Background())
+	if err := sink.Seek(context.Background(), pos); err != nil {
+		t.Fatal(err)
+	}
+	// A relaunch is not instant, so give one the time it would take: a kill, a
+	// fresh run, the drain that drops the old position's frames and the refill
+	// behind it.
+	time.Sleep(500 * time.Millisecond)
+	if got := sender.drains(); got != 0 {
+		t.Errorf("a seek to the current position drained the buffer (%d drains)", got)
+	}
+	if got := sender.count(); got != 1 {
+		t.Errorf("a seek to the current position sent %d packets, want 1", got)
+	}
+
+	sink.Stop(context.Background())
+	<-done
+}
+
 func TestStopEndsPlaybackPromptly(t *testing.T) {
 	pages := writeFixturePages(t, [][][]byte{{[]byte("first")}})
 	script := writeScript(t, "cat "+pages[0], "sleep 30")
@@ -498,6 +590,83 @@ func TestANewTrackWaitsForTheOldRunToLeave(t *testing.T) {
 	pos, _ := sink.PositionMs(context.Background())
 	if want := int64(7_000 + 3*frameMs); pos != want {
 		t.Errorf("second run position = %d, want %d (its own accounting)", pos, want)
+	}
+}
+
+// A seek mid-play, with the real decoder and the real queue: the frames of the
+// position being left cover the relaunch, the new position is what plays after
+// it, and the position the sink reports is where the audible audio is — not the
+// whole run ahead of it. This is the path the room's seek bar and the follower's
+// drift correction both take.
+func TestWithRealFFmpegASeekKeepsTheWireFed(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is not on PATH")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "tone.ogg")
+	gen := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=30",
+		"-c:a", "libopus", src)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generate fixture: %v: %s", err, out)
+	}
+
+	var logged bytes.Buffer
+	conn := &fakeConn{}
+	// Two seconds of buffer, the way the bot runs it.
+	sender := NewConnSender(conn, 100, slog.New(slog.NewTextHandler(&logged, nil)), nil, nil)
+	sink := NewSink("ffmpeg", sender, nil)
+
+	// The wire: one frame every 20ms, exactly the pace the connection pulls at.
+	var took atomic.Int64
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				provider := conn.providerFor()
+				if provider == nil {
+					continue
+				}
+				if frame, err := provider.ProvideOpusFrame(); err == nil && len(frame) > 0 {
+					took.Add(1)
+				}
+			}
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- sink.Play(context.Background(), client.SinkTrack{Path: src, PositionMs: 0}) }()
+
+	// Let it settle into playing, then move the position the way a seek bar or
+	// a drift correction does.
+	time.Sleep(2 * time.Second)
+	if got := took.Load(); got < 80 {
+		t.Fatalf("the wire took %d frames in two seconds, want about 100", got)
+	}
+	if err := sink.Seek(context.Background(), 20_000); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	pos, _ := sink.PositionMs(context.Background())
+	if pos < 20_000 || pos > 21_000 {
+		t.Fatalf("position after a seek to 20s = %d, want 20s plus what has played since", pos)
+	}
+	if strings.Contains(logged.String(), "ran dry") {
+		t.Errorf("the buffer ran dry across a seek:\n%s", logged.String())
+	}
+
+	sink.Stop(context.Background())
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Play did not return after Stop")
 	}
 }
 

@@ -233,6 +233,12 @@ func (s *Sink) Seek(ctx context.Context, positionMs int64) error {
 		positionMs = 0
 	}
 	s.mu.Lock()
+	if s.active && samePacket(s.positionLocked(), positionMs) {
+		// Already there. A kill, a relaunch, a drain and the refill behind
+		// them is a hiccup heard for a position the listener is not leaving.
+		s.mu.Unlock()
+		return nil
+	}
 	s.seekTo = positionMs
 	s.seekReq = true
 	rp, active := s.proc, s.active
@@ -266,18 +272,26 @@ func (s *Sink) Seek(ctx context.Context, positionMs int64) error {
 // was pushed would report the buffer as played and pull the room's drift
 // correction backwards. A sender that cannot say falls back to what it was
 // given, which is exact only while the buffer is empty.
+//
+// The run's start is posMs and its frames start at playedBase; a seek moves
+// both, which is what keeps the sum describing the new position rather than
+// the one being left.
 func (s *Sink) PositionMs(ctx context.Context) (int64, error) {
 	s.mu.Lock()
-	posMs, sent := s.posMs, s.sent
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.positionLocked(), nil
+}
+
+// positionLocked is PositionMs with the lock already held.
+func (s *Sink) positionLocked() int64 {
 	if reporter, ok := s.sender.(PlayedReporter); ok {
 		played := reporter.PlayedFrames() - s.playedBase
 		if played < 0 {
 			played = 0
 		}
-		return posMs + played*frameMs, nil
+		return s.posMs + played*frameMs
 	}
-	return posMs + sent*frameMs, nil
+	return s.posMs + s.sent*frameMs
 }
 
 // stream is the Play loop. Invariants worth keeping in mind while reading:
@@ -320,6 +334,11 @@ func (s *Sink) stream(ctx context.Context) error {
 				continue // a newer seek arrived while this run was warming
 			}
 			s.sender.Drain()
+			// The drain emptied the queue, so every frame the sender counts
+			// from here on belongs to this run: rebase before the lead goes
+			// out, or the frames of the position being left stay in the
+			// count and the position reads a whole run ahead of the audio.
+			s.rebasePosition()
 			if err := s.sendAll(ctx, lead); err != nil {
 				s.abort()
 				return err
@@ -539,12 +558,41 @@ func (s *Sink) seekPending() bool {
 	return s.seekReq
 }
 
+// takeSeek adopts the pending seek's position for the run about to start.
 func (s *Sink) takeSeek() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.posMs = s.seekTo
 	s.sent = 0
 	s.seekReq = false
+}
+
+// rebasePosition restarts this run's frame count at the sender's current one.
+//
+// A sender counts pulls for the whole connection, and a position belongs to one
+// run from one start. A seek's drain is the moment the queue holds nothing from
+// the position being left, so every frame still to come belongs to the run
+// about to be handed over, and counting from there is what keeps PositionMs
+// describing the audio. Without it the frames played before the seek stay in
+// the difference: the position reads a whole run-time ahead of where the audio
+// is, and whoever compares it with the room's own position — the follower's
+// drift correction — sees a disagreement too large to be one and stops
+// correcting until the track changes.
+func (s *Sink) rebasePosition() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if reporter, ok := s.sender.(PlayedReporter); ok {
+		s.playedBase = reporter.PlayedFrames()
+	}
+}
+
+// samePacket reports whether two positions are the same 20ms frame of audio.
+func samePacket(a, b int64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < frameMs
 }
 
 func (s *Sink) countPacket() {

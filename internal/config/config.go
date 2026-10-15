@@ -65,7 +65,7 @@ type Config struct {
 	// AudioBufferMs is how much audio the bot keeps queued ahead of the voice
 	// connection. It absorbs the hiccups — an ffmpeg relaunch between songs, a
 	// scheduling blip, a stuttering uplink — that would otherwise starve the
-	// connection's 20ms send loop and be heard as a drop. Default 3000; the
+	// connection's 20ms send loop and be heard as a drop. Default 2000; the
 	// useful range is about 500 (snappy pauses) to 5000 (a bad link). The bot
 	// plays that far behind the room, and the follower's drift tolerance
 	// follows this number so the buffer is never mistaken for drift.

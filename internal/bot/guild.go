@@ -253,6 +253,15 @@ func (b *Bot) joinRoomAsPlaceholder(ctx context.Context, guildID, channelID, roo
 	return room, nil
 }
 
+// itemIDs is the room items a set of remembered rows stands for.
+func itemIDs(rows []state.Queued) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ItemID)
+	}
+	return ids
+}
+
 // restoreDiscordQueue puts back the songs somebody queued through Discord when
 // the room no longer holds them.
 //
@@ -288,6 +297,16 @@ func (b *Bot) restoreDiscordQueue(ctx context.Context, room *client.RoomClient) 
 	}
 	after, err := room.QueueMany(ctx, trackIDs)
 	if err != nil {
+		if client.IsNotFound(err) {
+			// The room went away between the join and the queue, so there is
+			// nothing to put back into it: the caller opens a fresh room for
+			// the channel, and the rows were the gone room's.
+			b.logger.Info("bot: the room is gone; nothing to put back", "room", room.RoomID)
+			if err := b.store.ForgetQueued(ctx, room.RoomID, itemIDs(rows)...); err != nil {
+				b.logger.Warn("bot: forgetting a gone room's queue", "error", err)
+			}
+			return
+		}
 		b.logger.Warn("bot: could not put the Discord queue back", "room", room.RoomID, "error", err)
 		return
 	}
@@ -346,7 +365,13 @@ func (b *Bot) startParticipant(g *guildState, guildID, channelID, roomID string,
 	if bufferFrames < 3 {
 		bufferFrames = 3
 	}
-	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames, b.logger, b.voice.shouldHoldFrames), b.logger)
+	// An audio stall is the connection's fault, not the provider's, so the
+	// sender is given the way to rebuild it: a fresh voice gateway and socket,
+	// and the channel re-joined.
+	reconnect := func(ctx context.Context) (disgovoice.Conn, error) {
+		return b.voice.reconnect(ctx, guildID, channelID)
+	}
+	sink := voice.NewSink("ffmpeg", voice.NewConnSender(conn, bufferFrames, b.logger, b.voice.shouldHoldFrames, reconnect), b.logger)
 	bitrate := b.cfg.AudioBitrateKbps
 	if bitrate <= 0 {
 		bitrate = channelBitrateKbps(b.session, channelID)

@@ -137,6 +137,33 @@ func (h *voiceHub) open(ctx context.Context, guildID, channelID string) (voice.C
 	return conn, nil
 }
 
+// reconnect replaces the guild's voice connection: the old one is hung up and
+// dropped from the manager, so the next open builds a fresh voice gateway, UDP
+// socket and DAVE session, and re-joins the channel.
+//
+// It is what the sink's sender asks for when a connection has stopped taking
+// audio. Re-installing a frame provider cannot fix that: disgo's voice conn
+// closes and unregisters itself when its voice gateway drops — which takes the
+// bot out of the channel — and what the frames were being handed to is then a
+// closed socket.
+func (h *voiceHub) reconnect(ctx context.Context, guildID, channelID string) (voice.Conn, error) {
+	h.mu.Lock()
+	manager := h.manager
+	h.mu.Unlock()
+	if manager == nil {
+		return nil, fmt.Errorf("voice: not connected to Discord yet")
+	}
+	guild, err := snowflake.Parse(guildID)
+	if err != nil {
+		return nil, fmt.Errorf("voice: guild %q: %w", guildID, err)
+	}
+	if conn := manager.GetConn(guild); conn != nil {
+		conn.Close(ctx)
+		manager.RemoveConn(guild)
+	}
+	return h.open(ctx, guildID, channelID)
+}
+
 // close leaves the guild's voice channel, if it is in one.
 func (h *voiceHub) close(ctx context.Context, guildID string) {
 	h.mu.Lock()
