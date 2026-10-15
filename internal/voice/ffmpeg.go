@@ -16,10 +16,11 @@ const FrameMs = frameMs
 
 // DefaultVolume is how loud the bot plays when the config does not say. Music
 // arrives mastered hot, and Discord's opus is not the place to find headroom:
-// a quarter keeps a full-scale mix well clear of the ceiling, which is where
+// an eighth keeps a full-scale mix well clear of the ceiling, which is where
 // the peaks were coming from, and leaves the limiter as the backstop rather
-// than the thing doing the work on every song.
-const DefaultVolume = 0.25
+// than the thing doing the work on every song. It is config.DefaultVolume; this
+// is the copy the encoder needs so a zero volume is still a number.
+const DefaultVolume = 0.125
 
 // defaultBitrateKbps is what the encoder targets when the channel says
 // nothing: comfortably above the 64kbps a plain channel allows, well inside

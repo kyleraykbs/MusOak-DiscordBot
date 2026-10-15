@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kyleraykbs/MusOak-DiscordBot/internal/config"
 	"github.com/kyleraykbs/MusOak/pkg/client"
 )
 
@@ -150,10 +151,19 @@ func sinkFor(t *testing.T, script string) (*Sink, *fakeSender) {
 	return NewSink(script, sender, nil), sender
 }
 
+// The encoder's own default is the bot's: a zero volume means "play at the
+// default", and there are two copies of that number because the encoder cannot
+// import the config. They must not drift apart.
+func TestTheEncoderDefaultIsTheConfigs(t *testing.T) {
+	if DefaultVolume != config.DefaultVolume {
+		t.Errorf("voice default volume = %v, config default = %v", DefaultVolume, config.DefaultVolume)
+	}
+}
+
 func TestFFmpegArgsVolume(t *testing.T) {
-	// Music is mastered hot: the default takes a quarter off, and the config
+	// Music is mastered hot: the default takes an eighth off, and the config
 	// can say otherwise.
-	if args := ffmpegArgs("/f", 0, 0, 0); !strings.Contains(strings.Join(args, " "), "-af volume=0.250,alimiter=level=disabled:limit=0.891") {
+	if args := ffmpegArgs("/f", 0, 0, 0); !strings.Contains(strings.Join(args, " "), "-af volume=0.125,alimiter=level=disabled:limit=0.891") {
 		t.Errorf("default volume missing: %v", args)
 	}
 	if args := ffmpegArgs("/f", 0, 0, 0.4); !strings.Contains(strings.Join(args, " "), "-af volume=0.400,alimiter=level=disabled:limit=0.891") {

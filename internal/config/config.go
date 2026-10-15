@@ -28,11 +28,12 @@ const DefaultAudioBufferMs = 2000
 
 // DefaultVolume is what the bot plays at unless the config says otherwise.
 //
-// A quarter: Discord's opus is not where headroom is found, and music arrives
-// mastered hot, so the peaks heard at half were the mix reaching the ceiling.
-// A config that sets audioVolume keeps its own number - deleting the key from
-// an existing config.json is what adopts this one.
-const DefaultVolume = 0.25
+// An eighth: a quarter left music at conversational-to-loud in a call where
+// nobody else is amplified, and Discord's opus is not where headroom is found -
+// music arrives mastered hot, so the peaks heard at half were the mix reaching
+// the ceiling. A config that sets audioVolume keeps its own number - deleting
+// the key from an existing config.json is what adopts this one.
+const DefaultVolume = 0.125
 
 // Account is the placeholder musoak account: the room member named
 // "Discord Bot" that plays the room's mixed queue and holds every unlinked
@@ -71,7 +72,7 @@ type Config struct {
 	// follows this number so the buffer is never mistaken for drift.
 	AudioBufferMs int `json:"audioBufferMs,omitempty"`
 	// AudioVolume is what the bot plays at, as a fraction of each file's own
-	// level. Zero means the default (0.25): music is mastered hot and Discord's
+	// level. Zero means the default (0.125): music is mastered hot and Discord's
 	// opus has no headroom to give back.
 	AudioVolume float64 `json:"audioVolume,omitempty"`
 	// AudioBitrateKbps overrides the encoder's bitrate. Zero follows the voice
