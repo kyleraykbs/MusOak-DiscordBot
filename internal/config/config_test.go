@@ -118,13 +118,13 @@ func TestTheVolumeDefault(t *testing.T) {
 	if cfg.AudioVolume != DefaultVolume {
 		t.Errorf("volume = %v, want the default", cfg.AudioVolume)
 	}
-	path = writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"},"audioVolume":0.5}`)
+	path = writeConfig(t, `{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"},"audioVolume":0.4}`)
 	cfg, err = Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AudioVolume != 0.5 {
-		t.Errorf("volume = %v, want 0.5 as configured", cfg.AudioVolume)
+	if cfg.AudioVolume != 0.4 {
+		t.Errorf("volume = %v, want 0.4 as configured", cfg.AudioVolume)
 	}
 }
 
@@ -184,5 +184,41 @@ func TestValidateNamesWhatIsMissing(t *testing.T) {
 	cfg.Account = Account{Username: "b", Password: "p"}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("a complete config is invalid: %v", err)
+	}
+}
+
+// A config this bot wrote itself carries the bot's old defaults, and those are
+// not a decision anybody made: they are adopted as the new ones. A number
+// somebody actually chose is kept exactly as it is.
+func TestLegacyDefaultsAreMigratedAndChoicesAreKept(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "legacy.json")
+	if err := os.WriteFile(legacy, []byte(`{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"},"audioVolume":0.5,"audioBufferMs":1500}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(legacy)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AudioVolume != DefaultVolume {
+		t.Errorf("audioVolume = %v, want the new default %v", cfg.AudioVolume, DefaultVolume)
+	}
+	if cfg.AudioBufferMs != DefaultAudioBufferMs {
+		t.Errorf("audioBufferMs = %d, want the new default %d", cfg.AudioBufferMs, DefaultAudioBufferMs)
+	}
+	if DefaultAudioBufferMs != 2000 {
+		t.Errorf("the buffer default = %d, want two seconds of frames", DefaultAudioBufferMs)
+	}
+
+	chosen := filepath.Join(dir, "chosen.json")
+	if err := os.WriteFile(chosen, []byte(`{"token":"x","serverURL":"http://s","account":{"username":"b","password":"p"},"audioVolume":0.8,"audioBufferMs":4000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(chosen)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AudioVolume != 0.8 || cfg.AudioBufferMs != 4000 {
+		t.Errorf("chosen values = %v/%d, want them left alone", cfg.AudioVolume, cfg.AudioBufferMs)
 	}
 }

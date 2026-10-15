@@ -4,6 +4,7 @@
 package config
 
 import (
+	"log/slog"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +21,10 @@ import (
 // audio runs — the frames wait in the queue, so what leaves the wire is that
 // much older. Measured play needed well under a second; a stuttering uplink
 // wants more and pays for it in lag. A second and a half is the compromise,
-// and audioBufferMs moves it either way.
-const DefaultAudioBufferMs = 1500
+// and audioBufferMs moves it either way. Two seconds: a stuttering uplink is
+// the case this exists for, and the lag it costs is the price of hearing the
+// song instead of the gaps between its packets.
+const DefaultAudioBufferMs = 2000
 
 // DefaultVolume is what the bot plays at unless the config says otherwise.
 //
@@ -68,7 +71,7 @@ type Config struct {
 	// follows this number so the buffer is never mistaken for drift.
 	AudioBufferMs int `json:"audioBufferMs,omitempty"`
 	// AudioVolume is what the bot plays at, as a fraction of each file's own
-	// level. Zero means the default (0.75): music is mastered hot and Discord's
+	// level. Zero means the default (0.25): music is mastered hot and Discord's
 	// opus has no headroom to give back.
 	AudioVolume float64 `json:"audioVolume,omitempty"`
 	// AudioBitrateKbps overrides the encoder's bitrate. Zero follows the voice
@@ -76,6 +79,16 @@ type Config struct {
 	// boosted channel is where a higher number has any effect.
 	AudioBitrateKbps int `json:"audioBitrateKbps,omitempty"`
 }
+
+// The defaults this bot itself used to write into config files, before it knew
+// better. A file still carrying one of these did not choose it - the bot did, on
+// the day it made the file - so the current default is adopted instead, and the
+// migration is said out loud rather than left for somebody to find. Any other
+// value is a choice and is kept exactly as it is.
+const (
+	legacyVolume   = 0.5
+	legacyBufferMs = 1500
+)
 
 // Default fills the paths that have a conventional home, mirroring musoak's
 // own config: XDG directories, falling back to the home directory.
@@ -158,6 +171,17 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.AudioVolume == 0 {
 		cfg.AudioVolume = DefaultVolume
+	}
+	// A value that is exactly an old default is a default, not a decision: the
+	// files this bot wrote by itself are full of them, and the bot's own idea of
+	// loudness and buffering has moved since. Anything else is kept.
+	if cfg.AudioVolume == legacyVolume {
+		slog.Info("config: audioVolume was the old default", "was", legacyVolume, "now", DefaultVolume)
+		cfg.AudioVolume = DefaultVolume
+	}
+	if cfg.AudioBufferMs == legacyBufferMs {
+		slog.Info("config: audioBufferMs was the old default", "was", legacyBufferMs, "now", DefaultAudioBufferMs)
+		cfg.AudioBufferMs = DefaultAudioBufferMs
 	}
 	if cfg.Account.DisplayName == "" {
 		// An explicitly blanked name means the default, JSON cannot tell
